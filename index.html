@@ -612,8 +612,40 @@ function applyProfileData(d){if(!d)return false;try{if(typeof d.nick==='string')
 async function cloudSave(){if(!cloudReady||!fbDb||!cloudSyncCode||cloudBusy)return false;cloudBusy=true;try{await fbDb.collection('saves').doc(cloudSyncCode).set(collectProfileData());return true;}catch(e){console.error(e);return false;}finally{cloudBusy=false;}}
 async function cloudLoad(){if(!fbDb||!cloudSyncCode)return false;try{const s=await fbDb.collection('saves').doc(cloudSyncCode).get();if(!s.exists)return false;applyProfileData(s.data());return true;}catch(e){console.error(e);return false;}}
 async function cloudLinkCode(input){const code=cloudNormalizeCode(input);if(!code)return{ok:false,msg:'Некорректный код'};if(!fbDb)return{ok:false,msg:'Нет связи'};try{const s=await fbDb.collection('saves').doc(code).get();if(!s.exists)return{ok:false,msg:'Код не найден'};cloudSyncCode=code;try{localStorage.setItem('soulfeed_sync_code',code);}catch(e){}applyProfileData(s.data());updateCloudUI();return{ok:true,msg:'Прогресс загружен'};}catch(e){return{ok:false,msg:'Ошибка сети'};}}
-async function cloudLinkEmail(email,password){if(!fbAuth||!fbAuth.currentUser)return{ok:false,msg:'Не авторизован'};if(!email||!password||password.length<6)return{ok:false,msg:'Пароль минимум 6'};try{const c=firebase.auth.EmailAuthProvider.credential(email,password);await fbAuth.currentUser.linkWithCredential(c);const h=await sha256Hex(email.toLowerCase().trim());await fbDb.collection('emails').doc(h).set({syncCode:cloudSyncCode,createdAt:Date.now()});return{ok:true,msg:'Почта привязана'};}catch(e){return{ok:false,msg:e.message||'Ошибка'};}}
-async function cloudSignInEmail(email,password){if(!fbAuth)return{ok:false,msg:'Не готово'};if(!email||!password)return{ok:false,msg:'Введите почту и пароль'};try{const c=firebase.auth.EmailAuthProvider.credential(email,password);await fbAuth.signInWithCredential(c);const h=await sha256Hex(email.toLowerCase().trim());const s=await fbDb.collection('emails').doc(h).get();if(!s.exists)return{ok:false,msg:'Прогресс не найден'};cloudSyncCode=s.data().syncCode;try{localStorage.setItem('soulfeed_sync_code',cloudSyncCode);}catch(e){}await cloudLoad();updateCloudUI();return{ok:true,msg:'Вход выполнен'};}catch(e){return{ok:false,msg:e.message||'Ошибка'};}}
+async function cloudLinkEmail(email, password){
+  try {
+    if (!fbAuth || !fbAuth.currentUser) throw new Error("Нет авторизации");
+    if (!email || !password || password.length < 6) throw new Error("Пароль минимум 6 символов");
+    const c = firebase.auth.EmailAuthProvider.credential(email, password);
+    await fbAuth.currentUser.linkWithCredential(c);
+    const h = await sha256Hex(email.toLowerCase().trim());
+    await fbDb.collection('emails').doc(h).set({ syncCode: cloudSyncCode, createdAt: Date.now() });
+    alert("Успех! Почта привязана.");
+  } catch(e) {
+    alert("ОШИБКА ПРИВЯЗКИ: " + (e.message || e));
+  }
+}
+async function cloudSignInEmail(email, password){
+  try {
+    if (!fbAuth) throw new Error("Нет связи с Firebase");
+    if (!email || !password) throw new Error("Введите почту и пароль");
+    const h = await sha256Hex(email.toLowerCase().trim());
+    const s = await fbDb.collection('emails').doc(h).get();
+    if (!s.exists) throw new Error("Аккаунт не найден. Сначала нажмите ПРИВЯЗАТЬ.");
+    
+    cloudSyncCode = s.data().syncCode;
+    try { localStorage.setItem('soulfeed_sync_code', cloudSyncCode); } catch(e){}
+    
+    const c = firebase.auth.EmailAuthProvider.credential(email, password);
+    await fbAuth.signInWithCredential(c);
+    await cloudLoad(); 
+    updateCloudUI();
+    alert("Успешный вход!");
+    if (typeof openProfile === 'function') openProfile();
+  } catch(e) {
+    alert("ОШИБКА ВХОДА: " + (e.message || e));
+  }
+}
 function cloudSignOut(){if(fbAuth)fbAuth.signOut().catch(()=>{});cloudUserId=null;cloudReady=false;updateCloudUI();}
 async function fetchLeadersFromCloud(){if(!fbDb)return[];try{const s=await fbDb.collection('saves').orderBy('xp','desc').limit(50).get();const o=[];s.forEach(d=>{const x=d.data();o.push({nick:x.nick||'PLAYER',avatar:x.avatar||'default',profileXp:Math.max(0,Math.round(x.xp||0)),spiritXp:x.spiritXp||{},isMe:d.id===cloudSyncCode});});return o;}catch(e){return[];}}
 function updateCloudUI(){const st=document.getElementById('cloud-status'),cd=document.getElementById('cloud-code');if(st){st.textContent=!cloudInitDone?'…':(cloudReady?'ПОДКЛЮЧЕНО':'НЕТ СВЯЗИ');st.style.color=cloudReady?'#4ac26a':'var(--text-dim)';}if(cd)cd.textContent=cloudSyncCode||'—';}
@@ -5426,6 +5458,60 @@ document.addEventListener('mousedown', e => { spawnRipple(e.clientX, e.clientY);
     }
   }, 500);
 })();
+// ==========================================
+// ЗАПЛАТКА ДЛЯ КНОПОК ОБЛАКА
+// ==========================================
+setInterval(() => {
+  const modal = document.getElementById('profile-modal');
+  if (modal && modal.classList.contains('on')) {
+    const btnLink = document.getElementById('cloud-link-email');
+    const btnSignIn = document.getElementById('cloud-signin-email');
+    const btnCode = document.getElementById('cloud-link-code');
+    const btnCopy = document.getElementById('cloud-copy');
+    
+    // Привязка кнопки ПРИВЯЗАТЬ
+    if (btnLink && !btnLink.dataset.bound) {
+      btnLink.dataset.bound = "true";
+      btnLink.onclick = () => {
+        const em = document.getElementById('cloud-email').value.trim();
+        const pw = document.getElementById('cloud-pass').value;
+        if (!em || pw.length < 6) { alert("Введите почту и пароль (от 6 символов)"); return; }
+        btnLink.textContent = "ЖДЕМ...";
+        cloudLinkEmail(em, pw).finally(() => btnLink.textContent = "ПРИВЯЗАТЬ");
+      };
+    }
+
+    // Привязка кнопки ВОЙТИ
+    if (btnSignIn && !btnSignIn.dataset.bound) {
+      btnSignIn.dataset.bound = "true";
+      btnSignIn.onclick = () => {
+        const em = document.getElementById('cloud-email').value.trim();
+        const pw = document.getElementById('cloud-pass').value;
+        if (!em || pw.length < 6) { alert("Введите почту и пароль (от 6 символов)"); return; }
+        btnSignIn.textContent = "ЖДЕМ...";
+        cloudSignInEmail(em, pw).finally(() => btnSignIn.textContent = "ВОЙТИ");
+      };
+    }
+    
+    // Привязка кнопки ВВЕСТИ КОД
+    if (btnCode && !btnCode.dataset.bound) {
+      btnCode.dataset.bound = "true";
+      btnCode.onclick = async () => {
+        const i = document.getElementById('cloud-input-code'); if(!i) return;
+        const r = await cloudLinkCode(i.value); alert(r.msg); if(r.ok) openProfile();
+      };
+    }
+
+    // Привязка кнопки КОПИЯ
+    if (btnCopy && !btnCopy.dataset.bound) {
+      btnCopy.dataset.bound = "true";
+      btnCopy.onclick = () => {
+        if(!cloudSyncCode) return; try{navigator.clipboard.writeText(cloudSyncCode);}catch(e){}
+        btnCopy.textContent='OK'; setTimeout(()=>btnCopy.textContent='КОПИЯ',1200);
+      };
+    }
+  }
+}, 500);
 </script>
 </body>
 </html>
