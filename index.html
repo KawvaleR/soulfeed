@@ -1675,7 +1675,16 @@ function openProfile(){
   const rows = [];
   const gl = gloryLevelInfo();
   rows.push(`<div class="block" style="margin-bottom:14px;display:flex;gap:16px;align-items:center"><div style="width:72px;height:72px;border-radius:50%;background:#050507;border:2px solid var(--blood-soft);overflow:hidden;flex-shrink:0;box-shadow:0 0 24px rgba(139,26,26,.35)">${avatarSVG(PROFILE.avatar || 'default', 72)}</div><div style="flex:1;min-width:0"><div style="font-size:18px;letter-spacing:5px;color:var(--bone);margin-bottom:4px">${PROFILE.nick}</div><div style="font-size:11px;letter-spacing:2px;color:var(--text-dim);font-family:monospace">LVL ${l.level} / 100 · ${Math.round(PROFILE.xp)} XP</div><div style="font-size:11px;letter-spacing:2px;color:#ffe89a;font-family:monospace;margin-top:3px">СЛАВА ${gl.level} / 18 · ${gl.xp} XP</div></div></div>`);
-  rows.push(`<div class="stitle">// НИК</div>`);
+  rows.push(`<div class="stitle">// ОБЛАКО</div>`);
+rows.push(`<div class="block" style="margin-bottom:14px;display:flex;flex-direction:column;gap:10px">
+  <div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:10px;color:var(--text-dim);font-family:monospace;letter-spacing:2px">СТАТУС</span><span id="cloud-status" style="font-size:11px;font-family:monospace;font-weight:900;color:var(--text-dim)">…</span></div>
+  <div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:10px;color:var(--text-dim);font-family:monospace;letter-spacing:2px">КОД</span><span style="display:flex;align-items:center;gap:8px"><span id="cloud-code" style="font-size:11px;font-family:monospace;color:var(--bone)">—</span><button class="modal-close" id="cloud-copy" style="padding:6px 10px;font-size:9px">КОПИЯ</button></span></div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap"><input type="text" id="cloud-input-code" placeholder="SOUL-XXXX-XXXX" maxlength="16" style="flex:1;min-width:140px;background:rgba(10,10,14,.8);border:1px solid var(--border-2);color:var(--bone);padding:8px 10px;font-family:monospace;font-size:11px;border-radius:2px;outline:none;text-transform:uppercase"/><button class="modal-close" id="cloud-link-code" style="padding:8px 12px">ВВЕСТИ КОД</button></div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap"><input type="email" id="cloud-email" placeholder="почта" style="flex:1;min-width:120px;background:rgba(10,10,14,.8);border:1px solid var(--border-2);color:var(--bone);padding:8px 10px;font-family:monospace;font-size:11px;border-radius:2px;outline:none"/><input type="password" id="cloud-pass" placeholder="пароль" style="flex:1;min-width:100px;background:rgba(10,10,14,.8);border:1px solid var(--border-2);color:var(--bone);padding:8px 10px;font-family:monospace;font-size:11px;border-radius:2px;outline:none"/></div>
+  <div style="display:flex;gap:8px"><button class="modal-close" id="cloud-link-email" style="flex:1;padding:8px 12px">ПРИВЯЗАТЬ</button><button class="modal-close" id="cloud-signin-email" style="flex:1;padding:8px 12px">ВОЙТИ</button></div>
+  <div style="font-size:9px;line-height:1.5;color:var(--text-mute);font-family:monospace">Код переносит прогресс на другое устройство. Почта восстанавливает доступ.</div>
+</div>`);
+rows.push(`<div class="stitle">// НИК</div>`);
   rows.push(`<div class="srow" style="gap:8px;flex-wrap:nowrap"><input type="text" id="prof-nick-input" maxlength="14" style="flex:1;min-width:0;background:rgba(10,10,14,.8);border:1px solid var(--border-2);color:var(--bone);padding:10px 12px;font-family:monospace;font-size:13px;letter-spacing:2px;border-radius:2px;outline:none"/><button class="modal-close" id="prof-nick-save" style="padding:10px 16px;letter-spacing:2px;white-space:nowrap">СОХРАНИТЬ</button></div>`);
   rows.push(`<div class="stitle">// ОБЩАЯ СТАТИСТИКА</div>`);
   rows.push(`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin-bottom:14px">
@@ -2482,7 +2491,7 @@ function spawnCenterCrystal(){
 function aiTier(){
   if (!player) return 0.3;
   const lvl = levelFromXp(loadSpiritXP(player.spiritId)).level;
-  const t = Math.pow(Math.min(1, lvl / 40), 0.55);
+  const t = Math.pow(Math.min(1, lvl / 20), 0.7);
   return t;
 }
 function botTier(b){
@@ -2610,7 +2619,7 @@ function scoreAmbush(b, t){
     if (s > bestS){ bestS = s; best = bush; }
   }
   if (!best) return { score: 0, target: null };
-  return { score: Math.max(0, bestS * t), target: best };
+  return { score: Math.max(0, bestS * (t * 2.5)), target: best };
 }
 function scorePatrol(b, t){ return { score: 2, target: null }; }
 function botDecide(b, isAlly, pojer){
@@ -3963,7 +3972,7 @@ function botCastSkill(b, idx, dir, pos, isAlly){
       if (ownLOS){
         const t = botTier(b);
         let px = player.x, py = player.y;
-        const predictMs = lerp(0, 350, t);
+        const predictMs = lerp(0, 600, t);
         if (predictMs > 0){ const tsec = predictMs / 1000; px += player.facing.x * player.speed * tsec; py += player.facing.y * player.speed * tsec; }
         const d = Math.hypot(px-b.x, py-b.y);
         if (d < R) damagePlayer(damage);
@@ -5264,6 +5273,158 @@ document.addEventListener('mousedown', e => { spawnRipple(e.clientX, e.clientY);
     setTimeout(() => mo.disconnect(), 15000);
   } catch(e){}
   setInterval(purge, 4000);
+})();
+// ==========================================
+// МОДУЛЬ: КАСТОМНЫЙ ФОН И АВАТАРКА (v3 - с настройками)
+// ==========================================
+(function(){
+  // 1. Создаем слой для фона (поверх старого дождя)
+  const menuDiv = document.getElementById('menu');
+  if (menuDiv && !document.getElementById('custom-bg')) {
+    const bgDiv = document.createElement('div');
+    bgDiv.id = 'custom-bg';
+    bgDiv.style.cssText = 'position:absolute;inset:0;z-index:1;background-size:cover;background-position:center;opacity:0;transition:opacity .3s;pointer-events:none;';
+    bgDiv.innerHTML = '<div id="custom-bg-overlay" style="position:absolute;inset:0;transition:background .3s"></div>';
+    menuDiv.insertBefore(bgDiv, menuDiv.firstChild);
+  }
+
+  // 2. Функция применения фона и настроек
+  window.applyCustomBg = function(){
+    let bgData = null; 
+    try { 
+      bgData = localStorage.getItem('soulfeed_custom_bg'); 
+    } catch(e){}
+    
+    // Читаем настройки (по умолчанию прозрачность 100%, затемнение 60%)
+    let op = parseInt(localStorage.getItem('soulfeed_bg_opacity') || '100');
+    let dim = parseInt(localStorage.getItem('soulfeed_bg_dim') || '60');
+
+    const el = document.getElementById('custom-bg');
+    const overlay = document.getElementById('custom-bg-overlay');
+    const defaultBg = document.getElementById('bg');
+    const vignette = document.getElementById('vignette');
+    
+    if (!el) return;
+    
+    if (bgData) { 
+      el.style.backgroundImage = `url(${bgData})`; 
+      el.style.opacity = (op / 100).toString(); 
+      
+      // Настраиваем градиент (слева темнее, справа прозрачнее)
+      if (overlay) {
+        overlay.style.background = `linear-gradient(90deg, rgba(5,5,7,${dim/100}) 0%, rgba(5,5,7,${(dim*0.5)/100}) 50%, rgba(5,5,7,0) 100%)`;
+      }
+      
+      // Прячем старый дождь и виньетку, чтобы не мешали (но они видны сквозь прозрачность)
+      if (defaultBg) defaultBg.style.opacity = '0.85';
+      if (vignette) vignette.style.opacity = '0';
+    } else { 
+      el.style.backgroundImage = 'none'; 
+      el.style.opacity = '0'; 
+      if (defaultBg) defaultBg.style.opacity = '0.85';
+      if (vignette) vignette.style.opacity = '1';
+    }
+  };
+  window.applyCustomBg();
+
+  // 3. Поддержка картинок вместо SVG-аватарок
+  const originalAvatarSVG = window.avatarSVG || avatarSVG;
+  window.avatarSVG = function(id, size) {
+    size = size || 32;
+    if (id && id.startsWith('data:image')) {
+      return `<img src="${id}" style="width:${size}px;height:${size}px;object-fit:cover;border-radius:50%;display:block">`;
+    }
+    return originalAvatarSVG(id, size);
+  };
+
+  // 4. Автоматически вставляем кнопки и слайдеры в меню
+  setInterval(() => {
+    // --- АВАТАРКА В ПРОФИЛЕ ---
+    const grid = document.getElementById('avatar-picker');
+    if (grid && !document.getElementById('btn-upload-avatar')) {
+      grid.insertAdjacentHTML('afterbegin', `<div id="btn-upload-avatar" style="cursor:pointer;background:rgba(139,26,26,.2);border:1px dashed var(--blood);border-radius:2px;padding:12px 8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px"><div style="font-size:24px;color:var(--blood)">+</div><div style="font-size:9px;letter-spacing:1px;color:var(--bone);font-family:monospace;text-align:center">ФОТО</div></div>`);
+      document.getElementById('btn-upload-avatar').onclick = () => {
+        const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/*';
+        input.onchange = e => {
+          const file = e.target.files[0]; if(!file) return;
+          const reader = new FileReader();
+          reader.onload = ev => {
+            const img = new Image();
+            img.onload = () => {
+              const canvas = document.createElement('canvas'); canvas.width = 128; canvas.height = 128;
+              const c = canvas.getContext('2d');
+              const size = Math.min(img.width, img.height);
+              const x = (img.width - size) / 2; const y = (img.height - size) / 2;
+              c.drawImage(img, x, y, size, size, 0, 0, 128, 128);
+              PROFILE.avatar = canvas.toDataURL('image/jpeg', 0.8);
+              saveProfile(); updateProfileUI(); openProfile(); if(typeof cloudSave === 'function') cloudSave();
+            };
+            img.src = ev.target.result;
+          };
+          reader.readAsDataURL(file);
+        };
+        input.click();
+      };
+    }
+
+    // --- НАСТРОЙКИ ФОНА (Кнопка + Слайдеры) ---
+    const settingsModal = document.getElementById('settings-modal');
+    if (settingsModal && settingsModal.classList.contains('on') && !document.getElementById('btn-upload-bg')) {
+      const title = Array.from(settingsModal.querySelectorAll('.stitle')).find(el => el.textContent.includes('Внешний вид'));
+      if (title) {
+        // Читаем текущие значения для ползунков
+        let op = parseInt(localStorage.getItem('soulfeed_bg_opacity') || '100');
+        let dim = parseInt(localStorage.getItem('soulfeed_bg_dim') || '60');
+
+        const html = `
+          <div class="srow" style="background:rgba(20,8,8,.4);border:1px solid var(--blood-dark);border-radius:2px;padding:10px 8px;margin-bottom:8px">
+            <span style="letter-spacing:2px;color:var(--bone)">Свой фон меню</span>
+            <button class="modal-close" id="btn-upload-bg" style="padding:8px 16px;font-size:10px;letter-spacing:2px;background:rgba(139,26,26,.55);border-color:var(--blood);color:var(--bone)">ВЫБРАТЬ</button>
+          </div>
+          <div class="srow"><span>Прозрачность фона</span><input type="range" id="s-bg-op" min="10" max="100" value="${op}"><span class="sval" id="s-bg-op-v">${op}</span></div>
+          <div class="srow"><span>Затемнение (градиент)</span><input type="range" id="s-bg-dim" min="0" max="100" value="${dim}"><span class="sval" id="s-bg-dim-v">${dim}</span></div>
+        `;
+        title.insertAdjacentHTML('afterend', html);
+
+        // Обработчик кнопки выбора файла
+        document.getElementById('btn-upload-bg').onclick = () => {
+          const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/*';
+          input.onchange = e => {
+            const file = e.target.files[0]; if(!file) return;
+            const reader = new FileReader();
+            reader.onload = ev => {
+              const img = new Image();
+              img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const scale = Math.min(1920 / img.width, 1080 / img.height, 1);
+                canvas.width = img.width * scale; canvas.height = img.height * scale;
+                canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+                try { localStorage.setItem('soulfeed_custom_bg', canvas.toDataURL('image/jpeg', 0.7)); } catch(e){ alert('Слишком большая картинка'); }
+                window.applyCustomBg();
+              };
+              img.src = ev.target.result;
+            };
+            reader.readAsDataURL(file);
+          };
+          input.click();
+        };
+
+        // Обработчик прозрачности
+        document.getElementById('s-bg-op').oninput = (e) => {
+          localStorage.setItem('soulfeed_bg_opacity', e.target.value);
+          document.getElementById('s-bg-op-v').textContent = e.target.value;
+          window.applyCustomBg();
+        };
+
+        // Обработчик затемнения
+        document.getElementById('s-bg-dim').oninput = (e) => {
+          localStorage.setItem('soulfeed_bg_dim', e.target.value);
+          document.getElementById('s-bg-dim-v').textContent = e.target.value;
+          window.applyCustomBg();
+        };
+      }
+    }
+  }, 500);
 })();
 </script>
 </body>
