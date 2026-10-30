@@ -5512,6 +5512,312 @@ setInterval(() => {
     }
   }
 }, 500);
+// ==========================================
+// МОДУЛЬ: СВОЙ ПОЛ + ЯРКОСТЬ/НАСЫЩЕННОСТЬ/ЗАТЕМНЕНИЕ
+// ==========================================
+(function(){
+  let floorRawImg = null;
+  let floorProcessed = null;
+  let floorBright = 100, floorSat = 100, floorDim = 0;
+
+  try {
+    floorBright = parseInt(localStorage.getItem('soulfeed_floor_bright') || '100');
+    floorSat = parseInt(localStorage.getItem('soulfeed_floor_sat') || '100');
+    floorDim = parseInt(localStorage.getItem('soulfeed_floor_dim') || '0');
+  } catch(e){}
+
+  const _patternCache = new WeakMap();
+  const _proto = CanvasRenderingContext2D.prototype;
+  const _origFillRect = _proto.fillRect;
+
+  _proto.fillRect = function(x, y, w, h) {
+    if (floorProcessed && this.fillStyle === '#1a1a24' && w >= 300 && h >= 400) {
+      let pat = _patternCache.get(this);
+      if (!pat || pat._img !== floorProcessed) {
+        try { pat = this.createPattern(floorProcessed, 'repeat'); } catch(e){ pat = null; }
+        if (pat) { pat._img = floorProcessed; _patternCache.set(this, pat); }
+      }
+      if (pat) this.fillStyle = pat;
+    }
+    _origFillRect.call(this, x, y, w, h);
+  };
+
+  function rebuildFloor() {
+    if (!floorRawImg) { floorProcessed = null; return; }
+    const c = document.createElement('canvas');
+    c.width = floorRawImg.width;
+    c.height = floorRawImg.height;
+    const cx = c.getContext('2d');
+    cx.filter = `brightness(${floorBright}%) saturate(${floorSat}%)`;
+    cx.drawImage(floorRawImg, 0, 0);
+    if (floorDim > 0) {
+      cx.filter = 'none';
+      cx.fillStyle = `rgba(0,0,0,${floorDim/100})`;
+      cx.fillRect(0, 0, c.width, c.height);
+    }
+    floorProcessed = c;
+  }
+
+  window.applyCustomFloor = function() {
+    let data = null;
+    try { data = localStorage.getItem('soulfeed_floor'); } catch(e){}
+    if (data) {
+      const img = new Image();
+      img.onload = () => { floorRawImg = img; rebuildFloor(); };
+      img.src = data;
+    } else {
+      floorRawImg = null;
+      floorProcessed = null;
+    }
+  };
+  window.applyCustomFloor();
+
+  setInterval(() => {
+    const modal = document.getElementById('settings-modal');
+    if (!modal || !modal.classList.contains('on')) return;
+    if (document.getElementById('btn-upload-floor')) return;
+    const title = Array.from(modal.querySelectorAll('.stitle')).find(el => el.textContent.includes('Графика'));
+    if (!title) return;
+
+    title.insertAdjacentHTML('afterend', `
+      <div class="srow" style="background:rgba(20,8,8,.4);border:1px solid var(--blood-dark);border-radius:2px;padding:10px 8px;margin-bottom:8px">
+        <span style="letter-spacing:2px;color:var(--bone)">Свой пол карты</span>
+        <div style="display:flex;gap:6px">
+          <button class="modal-close" id="btn-clear-floor" style="padding:8px 12px;font-size:10px">СБРОС</button>
+          <button class="modal-close" id="btn-upload-floor" style="padding:8px 16px;font-size:10px;letter-spacing:2px;background:rgba(139,26,26,.55);border-color:var(--blood);color:var(--bone)">ВЫБРАТЬ</button>
+        </div>
+      </div>
+      <div class="srow"><span>Пол · Яркость</span><input type="range" id="s-floor-bright" min="20" max="150" value="${floorBright}"><span class="sval" id="s-floor-bright-v">${floorBright}</span></div>
+      <div class="srow"><span>Пол · Насыщенность</span><input type="range" id="s-floor-sat" min="0" max="200" value="${floorSat}"><span class="sval" id="s-floor-sat-v">${floorSat}</span></div>
+      <div class="srow"><span>Пол · Затемнение</span><input type="range" id="s-floor-dim" min="0" max="90" value="${floorDim}"><span class="sval" id="s-floor-dim-v">${floorDim}</span></div>
+    `);
+
+    const sB = document.getElementById('s-floor-bright');
+    const sS = document.getElementById('s-floor-sat');
+    const sD = document.getElementById('s-floor-dim');
+    sB.oninput = () => { floorBright = +sB.value; document.getElementById('s-floor-bright-v').textContent = floorBright; localStorage.setItem('soulfeed_floor_bright', floorBright); rebuildFloor(); };
+    sS.oninput = () => { floorSat = +sS.value; document.getElementById('s-floor-sat-v').textContent = floorSat; localStorage.setItem('soulfeed_floor_sat', floorSat); rebuildFloor(); };
+    sD.oninput = () => { floorDim = +sD.value; document.getElementById('s-floor-dim-v').textContent = floorDim; localStorage.setItem('soulfeed_floor_dim', floorDim); rebuildFloor(); };
+
+    document.getElementById('btn-upload-floor').onclick = () => {
+      const input = document.createElement('input');
+      input.type = 'file'; input.accept = 'image/*';
+      input.onchange = e => {
+        const file = e.target.files[0]; if(!file) return;
+        const reader = new FileReader();
+        reader.onload = ev => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const maxSize = 1024;
+            const scale = Math.min(maxSize / img.width, maxSize / img.height, 1);
+            canvas.width = img.width * scale;
+            canvas.height = img.height * scale;
+            canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+            try { localStorage.setItem('soulfeed_floor', canvas.toDataURL('image/jpeg', 0.75)); } 
+            catch(e){ alert('Слишком большая картинка'); return; }
+            window.applyCustomFloor();
+          };
+          img.src = ev.target.result;
+        };
+        reader.readAsDataURL(file);
+      };
+      input.click();
+    };
+
+    document.getElementById('btn-clear-floor').onclick = () => {
+      try { localStorage.removeItem('soulfeed_floor'); } catch(e){}
+      window.applyCustomFloor();
+    };
+  }, 500);
+})();
+// ==========================================
+// МОДУЛЬ: ПОЛ, ЗУМ И РЕЖИМ ЭКРАНА (v6 - True Independent)
+// ==========================================
+(function(){
+  if (typeof SETTINGS.camZoom === 'undefined') SETTINGS.camZoom = 1.0;
+  if (typeof SETTINGS.stretchMode === 'undefined') SETTINGS.stretchMode = 1; 
+
+  window.resize = function(){
+    applyViewportFix();
+    const vv = window.visualViewport;
+    const scrW = window.innerWidth;
+    const scrH = vv ? vv.height : window.innerHeight;
+    const zoom = SETTINGS.camZoom || 1.0;
+    const cv = document.getElementById('cv');
+
+    // Определяем пропорции в зависимости от растяга (влияет только на ширину)
+    let aspect = scrW / scrH;
+    const sm = SETTINGS.stretchMode || 1;
+    if (sm === 2) aspect = Math.min(aspect, 1.9);
+    if (sm === 3) aspect = Math.min(aspect, 1.77);
+    if (sm === 4) aspect = Math.min(aspect, 1.6);
+    if (sm === 5) aspect = Math.min(aspect, 1.4);
+
+    // Зум влияет на высоту. Ширина подстраивается под пропорции.
+    VH = Math.floor(scrH / zoom);
+    VW = Math.floor(VH * aspect);
+
+    if (GAME_ACTIVE){ 
+      cv.width = VW; 
+      cv.height = VH; 
+      
+      cv.style.width = '100vw';
+      cv.style.height = '100vh';
+      cv.style.position = 'absolute';
+      cv.style.left = '0';
+      cv.style.top = '0';
+      cv.style.transform = 'none';
+      cv.style.objectFit = 'fill'; 
+      
+      document.getElementById('game').style.background = '#000';
+    }
+    bgResize();
+    checkOrient();
+  };
+
+  setTimeout(window.resize, 200);
+  
+  const _origStartMatch = window.startMatch || startMatch;
+  window.startMatch = function() {
+      _origStartMatch();
+      setTimeout(window.resize, 50);
+  };
+
+  // --- СВОЙ ПОЛ КАРТЫ ---
+  let floorRawImg = null;
+  let floorProcessed = null;
+  let floorBright = parseInt(localStorage.getItem('soulfeed_floor_bright') || '100');
+  let floorSat = parseInt(localStorage.getItem('soulfeed_floor_sat') || '100');
+  let floorDim = parseInt(localStorage.getItem('soulfeed_floor_dim') || '0');
+
+  const _patternCache = new WeakMap();
+  const _proto = CanvasRenderingContext2D.prototype;
+  const _origFillRect = _proto.fillRect;
+
+  _proto.fillRect = function(x, y, w, h) {
+    if (floorProcessed && this.fillStyle === '#1a1a24' && w >= 300 && h >= 400) {
+      let pat = _patternCache.get(this);
+      if (!pat || pat._img !== floorProcessed) {
+        try { pat = this.createPattern(floorProcessed, 'repeat'); } catch(e){ pat = null; }
+        if (pat) { pat._img = floorProcessed; _patternCache.set(this, pat); }
+      }
+      if (pat) this.fillStyle = pat;
+    }
+    _origFillRect.call(this, x, y, w, h);
+  };
+
+  function rebuildFloor() {
+    if (!floorRawImg) { floorProcessed = null; return; }
+    const c = document.createElement('canvas');
+    c.width = floorRawImg.width;
+    c.height = floorRawImg.height;
+    const cx = c.getContext('2d');
+    cx.filter = `brightness(${floorBright}%) saturate(${floorSat}%)`;
+    cx.drawImage(floorRawImg, 0, 0);
+    if (floorDim > 0) {
+      cx.filter = 'none';
+      cx.fillStyle = `rgba(0,0,0,${floorDim/100})`;
+      cx.fillRect(0, 0, c.width, c.height);
+    }
+    floorProcessed = c;
+  }
+
+  window.applyCustomFloor = function() {
+    let data = localStorage.getItem('soulfeed_floor');
+    if (data) {
+      const img = new Image();
+      img.onload = () => { floorRawImg = img; rebuildFloor(); };
+      img.src = data;
+    } else { floorRawImg = null; floorProcessed = null; }
+  };
+  window.applyCustomFloor();
+
+  // --- НАСТРОЙКИ ---
+  setInterval(() => {
+    const modal = document.getElementById('settings-modal');
+    if (!modal || !modal.classList.contains('on')) return;
+    if (document.getElementById('s-camzoom')) return; 
+
+    const camTitle = Array.from(modal.querySelectorAll('.stitle')).find(el => el.textContent.includes('Камера'));
+    if (camTitle) {
+      camTitle.insertAdjacentHTML('afterend', `
+        <div class="srow"><span>Зум камеры (обзор)</span><input type="range" id="s-camzoom" min="0.6" max="1.5" step="0.1" value="${SETTINGS.camZoom}"><span class="sval" id="s-camzoom-v">${SETTINGS.camZoom}</span></div>
+      `);
+      document.getElementById('s-camzoom').oninput = (e) => {
+        SETTINGS.camZoom = parseFloat(e.target.value);
+        document.getElementById('s-camzoom-v').textContent = SETTINGS.camZoom;
+        saveSettings(); window.resize();
+      };
+    }
+
+    const lookTitle = Array.from(modal.querySelectorAll('.stitle')).find(el => el.textContent.includes('Внешний вид'));
+    if (lookTitle) {
+      lookTitle.insertAdjacentHTML('afterend', `
+        <div class="srow">
+          <span>Растяг экрана (1-5)</span>
+          <input type="range" id="s-stretch-slider" min="1" max="5" step="1" value="${SETTINGS.stretchMode}">
+          <span class="sval" id="s-stretch-v">${SETTINGS.stretchMode}</span>
+        </div>
+        <div class="srow" style="background:rgba(20,8,8,.4);border:1px solid var(--blood-dark);border-radius:2px;padding:10px 8px;margin:8px 0">
+          <span style="letter-spacing:2px;color:var(--bone)">Свой пол карты</span>
+          <div style="display:flex;gap:6px">
+            <button class="modal-close" id="btn-clear-floor" style="padding:8px 12px;font-size:10px">СБРОС</button>
+            <button class="modal-close" id="btn-upload-floor" style="padding:8px 16px;font-size:10px;letter-spacing:2px;background:rgba(139,26,26,.55);border-color:var(--blood);color:var(--bone)">ВЫБРАТЬ</button>
+          </div>
+        </div>
+        <div class="srow"><span>Пол · Яркость</span><input type="range" id="s-floor-bright" min="20" max="150" value="${floorBright}"><span class="sval" id="s-floor-bright-v">${floorBright}</span></div>
+        <div class="srow"><span>Пол · Насыщенность</span><input type="range" id="s-floor-sat" min="0" max="200" value="${floorSat}"><span class="sval" id="s-floor-sat-v">${floorSat}</span></div>
+        <div class="srow"><span>Пол · Затемнение</span><input type="range" id="s-floor-dim" min="0" max="90" value="${floorDim}"><span class="sval" id="s-floor-dim-v">${floorDim}</span></div>
+      `);
+
+      const sStretch = document.getElementById('s-stretch-slider');
+      sStretch.oninput = (e) => {
+        SETTINGS.stretchMode = parseInt(e.target.value);
+        document.getElementById('s-stretch-v').textContent = SETTINGS.stretchMode;
+        saveSettings(); window.resize();
+      };
+
+      const sB = document.getElementById('s-floor-bright');
+      const sS = document.getElementById('s-floor-sat');
+      const sD = document.getElementById('s-floor-dim');
+      sB.oninput = () => { floorBright = +sB.value; document.getElementById('s-floor-bright-v').textContent = floorBright; localStorage.setItem('soulfeed_floor_bright', floorBright); rebuildFloor(); };
+      sS.oninput = () => { floorSat = +sS.value; document.getElementById('s-floor-sat-v').textContent = floorSat; localStorage.setItem('soulfeed_floor_sat', floorSat); rebuildFloor(); };
+      sD.oninput = () => { floorDim = +sD.value; document.getElementById('s-floor-dim-v').textContent = floorDim; localStorage.setItem('soulfeed_floor_dim', floorDim); rebuildFloor(); };
+
+      document.getElementById('btn-upload-floor').onclick = () => {
+        const input = document.createElement('input');
+        input.type = 'file'; input.accept = 'image/*';
+        input.onchange = e => {
+          const file = e.target.files[0]; if(!file) return;
+          const reader = new FileReader();
+          reader.onload = ev => {
+            const img = new Image();
+            img.onload = () => {
+              const canvas = document.createElement('canvas');
+              const maxSize = 1024;
+              const scale = Math.min(maxSize / img.width, maxSize / img.height, 1);
+              canvas.width = img.width * scale;
+              canvas.height = img.height * scale;
+              canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+              try { localStorage.setItem('soulfeed_floor', canvas.toDataURL('image/jpeg', 0.75)); } 
+              catch(e){ alert('Слишком большая картинка'); return; }
+              window.applyCustomFloor();
+            };
+            img.src = ev.target.result;
+          };
+          reader.readAsDataURL(file);
+        };
+        input.click();
+      };
+
+      document.getElementById('btn-clear-floor').onclick = () => {
+        localStorage.removeItem('soulfeed_floor');
+        window.applyCustomFloor();
+      };
+    }
+  }, 500);
+})();
 </script>
 </body>
 </html>
