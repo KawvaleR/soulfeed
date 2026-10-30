@@ -9,6 +9,9 @@
 <meta name="theme-color" content="#050507">
 <link rel="manifest" href="manifest.json">
 <title>SOULFEED</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <style>
 a[href*="netlify.com"],a[href*="netlify.app"],a[href*="netlify"]{display:none !important;visibility:hidden !important;opacity:0 !important;pointer-events:none !important}
 iframe[src*="netlify"]{display:none !important;visibility:hidden !important}
@@ -592,6 +595,29 @@ try {
   }
 } catch(e){}
 function saveProfile(){ try{ localStorage.setItem('soulfeed_profile_v1', JSON.stringify(PROFILE)); }catch(e){} }
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBJrOlouIJAGCljR3C0omP5NzuDiwU0R2s",
+  authDomain: "soulfeed-595a9.firebaseapp.com",
+  projectId: "soulfeed-595a9",
+  storageBucket: "soulfeed-595a9.firebasestorage.app",
+  messagingSenderId: "958292271949",
+  appId: "1:958292271949:web:11fecef5e2b9f3d670cd04"
+};
+let fbApp=null,fbAuth=null,fbDb=null,cloudUserId=null,cloudSyncCode=null,cloudReady=false,cloudBusy=false,cloudInitDone=false;
+function genSyncCode(){const C='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';const p=()=>Array.from({length:4},()=>C[Math.floor(Math.random()*C.length)]).join('');return 'SOUL-'+p()+'-'+p();}
+function cloudNormalizeCode(code){if(!code)return '';let c=String(code).toUpperCase().replace(/\s+/g,'').replace(/[^A-Z0-9-]/g,'').replace(/^SOUL-?/,'');const m=c.match(/^([A-Z0-9]{4})-?([A-Z0-9]{4})$/);return m?'SOUL-'+m[1]+'-'+m[2]:'';}
+async function sha256Hex(str){try{const b=new TextEncoder().encode(str);const h=await crypto.subtle.digest('SHA-256',b);return Array.from(new Uint8Array(h)).map(x=>x.toString(16).padStart(2,'0')).join('');}catch(e){let h=0;for(let i=0;i<str.length;i++)h=((h<<5)-h+str.charCodeAt(i))|0;return 'x'+Math.abs(h).toString(16);}}
+function collectProfileData(){const sx={},ss={},gl={};SPIRITS.forEach(s=>{sx[s.id]=loadSpiritXP(s.id);ss[s.id]=loadSpiritStats(s.id);gl[s.id]=loadGlory(s.id);});return{nick:PROFILE.nick,xp:PROFILE.xp,avatar:PROFILE.avatar||'default',stats:PROFILE.stats||{},spiritXp:sx,spiritStats:ss,glory:gl,badge:loadBadgeChoice(),title:loadTitleChoice(),titleColor:loadTitleColorIdx(),lastUpdate:Date.now()};}
+function applyProfileData(d){if(!d)return false;try{if(typeof d.nick==='string')PROFILE.nick=d.nick.slice(0,14);if(typeof d.xp==='number')PROFILE.xp=Math.max(0,d.xp);if(typeof d.avatar==='string')PROFILE.avatar=d.avatar;if(d.stats)for(const k in PROFILE.stats)if(typeof d.stats[k]==='number')PROFILE.stats[k]=d.stats[k];saveProfile();if(d.spiritXp)SPIRITS.forEach(s=>{if(typeof d.spiritXp[s.id]==='number')saveSpiritXP(s.id,d.spiritXp[s.id]);});if(d.spiritStats)SPIRITS.forEach(s=>{if(d.spiritStats[s.id])saveSpiritStats(s.id,d.spiritStats[s.id]);});if(d.glory)SPIRITS.forEach(s=>{if(d.glory[s.id])saveGlory(s.id,d.glory[s.id]);});if(typeof d.badge==='number')saveBadgeChoice(d.badge);if(typeof d.title==='number')saveTitleChoice(d.title);if(typeof d.titleColor==='number')saveTitleColorIdx(d.titleColor);updateProfileUI();updateHero();return true;}catch(e){console.error(e);return false;}}
+async function cloudSave(){if(!cloudReady||!fbDb||!cloudSyncCode||cloudBusy)return false;cloudBusy=true;try{await fbDb.collection('saves').doc(cloudSyncCode).set(collectProfileData());return true;}catch(e){console.error(e);return false;}finally{cloudBusy=false;}}
+async function cloudLoad(){if(!fbDb||!cloudSyncCode)return false;try{const s=await fbDb.collection('saves').doc(cloudSyncCode).get();if(!s.exists)return false;applyProfileData(s.data());return true;}catch(e){console.error(e);return false;}}
+async function cloudLinkCode(input){const code=cloudNormalizeCode(input);if(!code)return{ok:false,msg:'Некорректный код'};if(!fbDb)return{ok:false,msg:'Нет связи'};try{const s=await fbDb.collection('saves').doc(code).get();if(!s.exists)return{ok:false,msg:'Код не найден'};cloudSyncCode=code;try{localStorage.setItem('soulfeed_sync_code',code);}catch(e){}applyProfileData(s.data());updateCloudUI();return{ok:true,msg:'Прогресс загружен'};}catch(e){return{ok:false,msg:'Ошибка сети'};}}
+async function cloudLinkEmail(email,password){if(!fbAuth||!fbAuth.currentUser)return{ok:false,msg:'Не авторизован'};if(!email||!password||password.length<6)return{ok:false,msg:'Пароль минимум 6'};try{const c=firebase.auth.EmailAuthProvider.credential(email,password);await fbAuth.currentUser.linkWithCredential(c);const h=await sha256Hex(email.toLowerCase().trim());await fbDb.collection('emails').doc(h).set({syncCode:cloudSyncCode,createdAt:Date.now()});return{ok:true,msg:'Почта привязана'};}catch(e){return{ok:false,msg:e.message||'Ошибка'};}}
+async function cloudSignInEmail(email,password){if(!fbAuth)return{ok:false,msg:'Не готово'};if(!email||!password)return{ok:false,msg:'Введите почту и пароль'};try{const c=firebase.auth.EmailAuthProvider.credential(email,password);await fbAuth.signInWithCredential(c);const h=await sha256Hex(email.toLowerCase().trim());const s=await fbDb.collection('emails').doc(h).get();if(!s.exists)return{ok:false,msg:'Прогресс не найден'};cloudSyncCode=s.data().syncCode;try{localStorage.setItem('soulfeed_sync_code',cloudSyncCode);}catch(e){}await cloudLoad();updateCloudUI();return{ok:true,msg:'Вход выполнен'};}catch(e){return{ok:false,msg:e.message||'Ошибка'};}}
+function cloudSignOut(){if(fbAuth)fbAuth.signOut().catch(()=>{});cloudUserId=null;cloudReady=false;updateCloudUI();}
+async function fetchLeadersFromCloud(){if(!fbDb)return[];try{const s=await fbDb.collection('saves').orderBy('xp','desc').limit(50).get();const o=[];s.forEach(d=>{const x=d.data();o.push({nick:x.nick||'PLAYER',avatar:x.avatar||'default',profileXp:Math.max(0,Math.round(x.xp||0)),spiritXp:x.spiritXp||{},isMe:d.id===cloudSyncCode});});return o;}catch(e){return[];}}
+function updateCloudUI(){const st=document.getElementById('cloud-status'),cd=document.getElementById('cloud-code');if(st){st.textContent=!cloudInitDone?'…':(cloudReady?'ПОДКЛЮЧЕНО':'НЕТ СВЯЗИ');st.style.color=cloudReady?'#4ac26a':'var(--text-dim)';}if(cd)cd.textContent=cloudSyncCode||'—';}
+function cloudInit(){if(cloudInitDone)return;if(typeof firebase==='undefined'||!firebase.initializeApp)return;try{fbApp=(firebase.apps&&firebase.apps.length)?firebase.app():firebase.initializeApp(FIREBASE_CONFIG);fbAuth=firebase.auth();fbDb=firebase.firestore();}catch(e){return;}cloudInitDone=true;fbAuth.onAuthStateChanged(u=>{if(u){cloudUserId=u.uid;cloudReady=true;let sv=null;try{sv=localStorage.getItem('soulfeed_sync_code');}catch(e){}if(sv){cloudSyncCode=sv;cloudLoad().then(()=>updateCloudUI());}else{cloudSyncCode=genSyncCode();try{localStorage.setItem('soulfeed_sync_code',cloudSyncCode);}catch(e){}cloudSave().then(()=>updateCloudUI());}updateCloudUI();}else{cloudReady=false;fbAuth.signInAnonymously().catch(()=>{});}});}
 
 const AVATARS = [
   { id:'default', name:'СИЛУЭТ' }, { id:'kaneki', name:'КАНЭКИ' }, { id:'owl', name:'СОВА' },
@@ -1736,8 +1762,11 @@ function openProfile(){
 document.getElementById('profile-close').onclick = () => { playClick(280); _profileOpenSpirit = null; document.getElementById('profile-modal').classList.remove('on'); };
 
 let _leadersTab = 'profile';
-function renderLeadersList(){
+async function renderLeadersList(){
   const cont = document.getElementById('leaders-content');
+  if (!cont) return;
+  cont.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-mute);font-family:monospace;font-size:11px;letter-spacing:2px">ЗАГРУЗКА…</div>';
+  try { const cl = await fetchLeadersFromCloud(); if (cl && cl.length) ONLINE_LEADERS = cl.filter(u => !u.isMe); } catch(e){}
   const metric = _leadersTab;
   const list = leadersFor(metric);
   const rows = [];
@@ -4485,6 +4514,7 @@ function endMatch(won){
   };
 
   document.getElementById('end-modal').classList.add('on');
+  if (typeof cloudSave === 'function') cloudSave();
 }
 
 function renderDetailStats(){
@@ -5165,6 +5195,7 @@ window.addEventListener('orientationchange', () => setTimeout(resize, 300));
 if (window.visualViewport){ window.visualViewport.addEventListener('resize', resize); window.visualViewport.addEventListener('scroll', applyViewportFix); }
 resize();
 updateHero(); updateProfileUI();
+cloudInit();
 applyMenuVisuals(); applyVisuals(); applyLayout();
 requestAnimationFrame(drawBg); requestAnimationFrame(tick);
 
