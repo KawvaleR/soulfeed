@@ -6786,6 +6786,224 @@ setInterval(() => {
     }
   };
 })();
+// ==========================================
+// МОДУЛЬ: ПАТЧ ДЛЯ КЛАНОВ (Заявки, Роли, Щит, XP)
+// ==========================================
+(function(){
+  if (typeof fbDb === 'undefined') return;
+
+  // 1. ФОРМА "ЩИТ" ДЛЯ АВАТАРКИ
+  const style = document.createElement('style');
+  style.innerHTML = `
+    .clan-shield {
+      border-radius: 0 !important;
+      clip-path: polygon(50% 0%, 100% 15%, 100% 85%, 50% 100%, 0% 85%, 0% 15%);
+      background: #050507;
+    }
+  `;
+  document.head.appendChild(style);
+
+  // 2. АВТО-ОБНОВЛЕНИЕ XP КЛАНА ПОСЛЕ МАТЧА
+  const _origEndMatch = window.endMatch || endMatch;
+  window.endMatch = function(won) {
+    _origEndMatch(won);
+    if (PROFILE.clanId) {
+      // Пересчитываем общий XP клана в фоне
+      setTimeout(async () => {
+        try {
+          const doc = await fbDb.collection('clans').doc(PROFILE.clanId).get();
+          if (!doc.exists) return;
+          const members = doc.data().members || [];
+          let total = 0;
+          for (const m of members) {
+            try { const s = await fbDb.collection('saves').doc(m).get(); total += Math.max(0, Math.round(s.data()?.xp||0)); } catch(e){}
+          }
+          await fbDb.collection('clans').doc(PROFILE.clanId).update({ totalXp: total });
+        } catch(e){}
+      }, 2000); // ждем 2 сек, чтобы база успела сохранить наш XP
+    }
+  };
+
+  // 3. ЗАЯВКИ И РОЛИ (Перезаписываем окно просмотра клана)
+  const _origOpenClanView = window.openClanView;
+  
+  window.openClanView = async function(clanId){
+    let modal = document.getElementById('clan-view-modal');
+    if (!modal){
+      modal = document.createElement('div');
+      modal.id = 'clan-view-modal'; modal.className = 'modal';
+      modal.innerHTML = `<div class="modal-head"><div class="modal-title" id="clan-view-title">КЛАН</div><button class="modal-close" onclick="document.getElementById('clan-view-modal').classList.remove('on')">ЗАКРЫТЬ</button></div><div style="max-width:700px;margin:0 auto" id="clan-view-content">ЗАГРУЗКА...</div>`;
+      document.body.appendChild(modal);
+    }
+    modal.classList.add('on');
+    const cont = document.getElementById('clan-view-content');
+    cont.innerHTML = 'ЗАГРУЗКА...';
+    try {
+      const doc = await fbDb.collection('clans').doc(clanId).get();
+      if (!doc.exists){ cont.innerHTML = 'Клан не найден'; return; }
+      const c = doc.data();
+      const isMember = (c.members||[]).includes(cloudSyncCode);
+      const isOwner = c.ownerId === cloudSyncCode;
+      const isAdmin = (c.admins||[]).includes(cloudSyncCode);
+      const canEdit = isOwner || isAdmin;
+
+      const memberProfiles = await Promise.all((c.members||[]).map(async (uid) => {
+        try { const s = await fbDb.collection('saves').doc(uid).get(); return { id: uid, ...s.data() }; } catch(e){ return { id: uid, nick: 'unknown', xp: 0 }; }
+      }));
+      memberProfiles.sort((a,b) => (b.xp||0) - (a.xp||0));
+
+      const rows = [];
+      const bs = c.bannerSettings || {};
+      
+      // Шапка клана с формой ЩИТ
+      rows.push(`<div class="block" style="margin-bottom:14px;position:relative;overflow:hidden;padding:24px 14px;">
+        ${c.banner?`<div style="position:absolute;inset:0;z-index:0;background-image:url(${c.banner});background-size:cover;background-position:center;filter:brightness(${bs.bright||100}%) saturate(${bs.sat||100}%);opacity:${(bs.op||100)/100}"></div><div style="position:absolute;inset:0;z-index:0;background:linear-gradient(180deg,transparent 0%,rgba(5,5,7,${(bs.dim||60)/100}) 100%)"></div>`:''}
+        <div style="position:relative;z-index:1;display:flex;align-items:center;gap:14px">
+          <div class="clan-shield" style="width:72px;height:82px;border:3px solid ${c.frameColor||'#8b1a1a'};overflow:hidden;display:flex;align-items:center;justify-content:center;box-shadow:0 0 24px ${c.frameColor||'#8b1a1a'}88;flex-shrink:0">
+            ${c.avatar?`<img src="${c.avatar}" style="width:100%;height:100%;object-fit:cover">`:`<span style="font-size:24px;font-weight:900;color:${c.frameColor||'#d8d8d2'}">${(c.tag||'??').slice(0,2)}</span>`}
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:20px;letter-spacing:3px;color:var(--bone);font-family:monospace">[${c.tag}] ${c.name}</div>
+            <div style="font-size:11px;color:var(--text-dim);font-family:monospace;margin-top:4px">${memberProfiles.length} / ${c.maxMembers||20} · ${c.totalXp||0} XP</div>
+          </div>
+        </div>
+      </div>`);
+
+      // Кнопки действий
+      const actions = [];
+      if (!isMember) actions.push(`<button class="sclose" id="clan-btn-join" style="margin-top:0">ВСТУПИТЬ</button>`);
+      else {
+        if (canEdit) actions.push(`<button class="sclose" id="clan-btn-edit" style="margin-top:0">РЕДАКТОР</button>`);
+        if (canEdit) actions.push(`<button class="sclose" id="clan-btn-reqs" style="margin-top:0;border-color:#e0b94a;color:#e0b94a">ЗАЯВКИ</button>`);
+        actions.push(`<button class="sclose" id="clan-btn-chat" style="margin-top:0">ЧАТ</button>`);
+        actions.push(`<button class="sclose" id="clan-btn-leave" style="margin-top:0;border-color:#e05a5a;color:#e05a5a">ВЫЙТИ</button>`);
+      }
+      if (actions.length) rows.push(`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">${actions.join('')}</div>`);
+
+      rows.push(`<div class="stitle">// СОСТАВ (ТОП)</div>`);
+      memberProfiles.forEach((m,i) => {
+        const role = c.ownerId===m.id?'ВЛАДЕЛЕЦ':(c.admins||[]).includes(m.id)?'АДМИН':(c.mods||[]).includes(m.id)?'МОДЕР':'УЧАСТНИК';
+        const isMe = m.id === cloudSyncCode;
+        // Если это владелец или админ, строки кликабельны для выдачи ролей
+        const clickable = canEdit && !isMe && m.id !== c.ownerId;
+        rows.push(`<div class="leader-row ${isMe?'me':''}" data-uid="${m.id}" data-role="${role}" data-clickable="${clickable}" style="cursor:${clickable?'pointer':'default'}">
+          <div class="lrank">#${i+1}</div>
+          <div class="lav">${avatarSVG(m.avatar||'default',44)}</div>
+          <div class="lnick"><div class="ln">${m.nick||'Unknown'}${isMe?' [ТЫ]':''}</div><div class="lsub">${role} · LVL ${levelFromXp(m.xp||0).level}</div></div>
+          <div class="lval">${m.xp||0} XP</div>
+        </div>`);
+      });
+      cont.innerHTML = rows.join('');
+
+      // Обработчики кнопок
+      const b1 = document.getElementById('clan-btn-join'); if (b1) b1.onclick = () => joinClan(clanId, c);
+      const b2 = document.getElementById('clan-btn-edit'); if (b2) b2.onclick = () => openClanEditor(clanId, c);
+      const b3 = document.getElementById('clan-btn-chat'); if (b3) b3.onclick = () => openChat('clan_'+clanId, '['+c.tag+'] '+c.name);
+      const b4 = document.getElementById('clan-btn-leave'); if (b4) b4.onclick = () => leaveClan(clanId, c);
+      const bReq = document.getElementById('clan-btn-reqs'); if (bReq) bReq.onclick = () => openClanRequests(clanId, c);
+
+      // Обработчик клика по участнику (Выдача ролей)
+      cont.querySelectorAll('[data-uid]').forEach(row => {
+        row.onclick = (e) => {
+          const uid = row.dataset.uid;
+          if (row.dataset.clickable === 'true') {
+            // Меню выдачи ролей
+            const currentRole = row.dataset.role;
+            const newRole = prompt(`Текущая роль: ${currentRole}\nВведите новую роль:\n1 - УЧАСТНИК\n2 - МОДЕР\n3 - АДМИН`, currentRole === 'АДМИН' ? '3' : currentRole === 'МОДЕР' ? '2' : '1');
+            if (newRole === '1' || newRole === '2' || newRole === '3') {
+              changeMemberRole(clanId, uid, newRole, c);
+            }
+          } else if (uid !== cloudSyncCode) {
+            openPlayerProfile(uid);
+          }
+        };
+      });
+    } catch(e){ cont.innerHTML = 'Ошибка: ' + e.message; }
+  };
+
+  // Функция смены роли
+  window.changeMemberRole = async function(clanId, uid, roleCode, c) {
+    let newAdmins = c.admins || [];
+    let newMods = c.mods || [];
+    // Убираем из всех списков
+    newAdmins = newAdmins.filter(id => id !== uid);
+    newMods = newMods.filter(id => id !== uid);
+    // Добавляем в нужный
+    if (roleCode === '3') newAdmins.push(uid);
+    if (roleCode === '2') newMods.push(uid);
+    
+    try {
+      await fbDb.collection('clans').doc(clanId).update({ admins: newAdmins, mods: newMods });
+      playClick(460);
+      openClanView(clanId); // Перерисовываем
+    } catch(e) { alert(e.message); }
+  };
+
+  // Функция просмотра заявок
+  window.openClanRequests = async function(clanId, c) {
+    let modal = document.getElementById('clan-req-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'clan-req-modal'; modal.className = 'modal';
+      modal.innerHTML = `<div class="modal-head"><div class="modal-title">ЗАЯВКИ В КЛАН</div><button class="modal-close" onclick="document.getElementById('clan-req-modal').classList.remove('on')">ЗАКРЫТЬ</button></div><div style="max-width:600px;margin:0 auto" id="clan-req-content">ЗАГРУЗКА...</div>`;
+      document.body.appendChild(modal);
+    }
+    modal.classList.add('on');
+    const cont = document.getElementById('clan-req-content');
+    cont.innerHTML = 'ЗАГРУЗКА...';
+    
+    try {
+      const snap = await fbDb.collection('clans').doc(clanId).collection('requests').get();
+      if (snap.empty) { cont.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-mute)">Нет активных заявок</div>'; return; }
+      
+      const rows = [];
+      for (const doc of snap.docs) {
+        const uid = doc.id;
+        const req = doc.data();
+        rows.push(`
+          <div class="leader-row" style="border-color:#6a5a20;background:rgba(30,20,8,.4)">
+            <div class="lav">${avatarSVG(req.avatar || 'default', 44)}</div>
+            <div class="lnick"><div class="ln">${req.nick}</div><div class="lsub">${req.xp || 0} XP</div></div>
+            <div style="display:flex;gap:4px">
+              <button class="modal-close" onclick="acceptClanReq('${clanId}', '${uid}')" style="padding:6px 10px;background:rgba(74,194,106,.2);border-color:#4ac26a;color:#4ac26a">✓</button>
+              <button class="modal-close" onclick="declineClanReq('${clanId}', '${uid}')" style="padding:6px 10px;background:rgba(139,26,26,.4);border-color:#e05a5a;color:#e05a5a">✗</button>
+            </div>
+          </div>
+        `);
+      }
+      cont.innerHTML = rows.join('');
+    } catch(e) { cont.innerHTML = 'Ошибка: ' + e.message; }
+  };
+
+  window.acceptClanReq = async function(clanId, uid) {
+    try {
+      const doc = await fbDb.collection('clans').doc(clanId).get();
+      const c = doc.data();
+      if ((c.members||[]).length >= (c.maxMembers || 20)) { alert('Клан полон!'); return; }
+      
+      const members = (c.members||[]).slice();
+      if (!members.includes(uid)) members.push(uid);
+      
+      await fbDb.collection('clans').doc(clanId).update({ members });
+      await fbDb.collection('clans').doc(clanId).collection('requests').doc(uid).delete();
+      
+      // Обновляем клан у игрока (если он онлайн, но это сработает при следующей загрузке)
+      try { await fbDb.collection('saves').doc(uid).update({ clanId: clanId }); } catch(e){}
+      
+      playClick(460);
+      openClanRequests(clanId, c); // Обновляем список
+    } catch(e) { alert(e.message); }
+  };
+
+  window.declineClanReq = async function(clanId, uid) {
+    try {
+      await fbDb.collection('clans').doc(clanId).collection('requests').doc(uid).delete();
+      playClick(280);
+      const doc = await fbDb.collection('clans').doc(clanId).get();
+      openClanRequests(clanId, doc.data());
+    } catch(e) { alert(e.message); }
+  };
+})();
 </script>
 </body>
 </html>
