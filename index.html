@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
@@ -5817,6 +5817,974 @@ setInterval(() => {
       };
     }
   }, 500);
+})();
+// ==========================================
+// МОДУЛЬ: СОЦИАЛКА (v5 - Полный визуал чужого профиля)
+// ==========================================
+(function(){
+  if (!PROFILE.friends) PROFILE.friends = [];
+  if (!PROFILE.incomingReqs) PROFILE.incomingReqs = [];
+  if (!PROFILE.privacy) PROFILE.privacy = { friendReq: 1 };
+
+  // --- Синхронизация ---
+  const _origCollectProfileData = window.collectProfileData || collectProfileData;
+  window.collectProfileData = function(){
+    const d = _origCollectProfileData();
+    d.friends = PROFILE.friends;
+    d.incomingReqs = PROFILE.incomingReqs;
+    d.privacy = PROFILE.privacy;
+    d.banner = localStorage.getItem('soulfeed_banner') || '';
+    d.bannerSettings = JSON.parse(localStorage.getItem('soulfeed_banner_settings') || '{}');
+    return d;
+  };
+
+  const _origApplyProfileData = window.applyProfileData || applyProfileData;
+  window.applyProfileData = function(data){
+    const res = _origApplyProfileData(data);
+    if (data.friends) PROFILE.friends = data.friends;
+    if (data.incomingReqs) PROFILE.incomingReqs = data.incomingReqs;
+    if (data.privacy) PROFILE.privacy = data.privacy;
+    if (data.banner) localStorage.setItem('soulfeed_banner', data.banner);
+    if (data.bannerSettings) localStorage.setItem('soulfeed_banner_settings', JSON.stringify(data.bannerSettings));
+    return res;
+  };
+
+  // --- Загрузка топа ---
+  window.fetchLeadersFromCloud = async function(){
+    if (!fbDb) return [];
+    try {
+      const s = await fbDb.collection('saves').orderBy('xp','desc').limit(50).get();
+      const o = [];
+      s.forEach(d => {
+        const x = d.data();
+        o.push({ id: d.id, nick: x.nick||'PLAYER', avatar: x.avatar||'default', profileXp: Math.max(0, Math.round(x.xp||0)), spiritXp: x.spiritXp||{}, isMe: d.id === cloudSyncCode });
+      });
+      return o;
+    } catch(e){ return []; }
+  };
+
+  window.renderLeadersList = async function(){
+    const cont = document.getElementById('leaders-content');
+    if (!cont) return;
+    cont.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-mute);font-family:monospace;font-size:11px">ЗАГРУЗКА…</div>';
+    try { const cl = await fetchLeadersFromCloud(); if (cl && cl.length) ONLINE_LEADERS = cl.filter(u => !u.isMe); } catch(e){}
+    
+    window._cloudProfilesCache = {};
+    ONLINE_LEADERS.forEach(u => { window._cloudProfilesCache[u.id] = u; });
+
+    const metric = _leadersTab;
+    const list = leadersFor(metric);
+    const rows = [];
+
+    rows.push(`<div style="margin-bottom:12px;display:flex;gap:8px">
+      <input type="text" id="leader-search" placeholder="Поиск игрока..." style="flex:1;background:rgba(10,10,14,.8);border:1px solid var(--border-2);color:var(--bone);padding:10px;font-family:monospace;font-size:12px;border-radius:2px;outline:none">
+    </div>`);
+
+    const tabs = [{ id:'profile', label:'ПРОФИЛЬ' }];
+    SPIRITS.forEach(s => tabs.push({ id:s.id, label:s.name, color:s.color }));
+    rows.push(`<div class="leader-tabs">`);
+    tabs.forEach(t => {
+      const on = (t.id === metric) ? ' on' : '';
+      const style = (t.color && on) ? ` style="border-color:${t.color};box-shadow:0 0 10px ${t.color}55"` : '';
+      rows.push(`<button class="leader-tab${on}" data-tab="${t.id}"${style}>${t.label}</button>`);
+    });
+    rows.push(`</div>`);
+
+    if (list.length === 0){
+      rows.push(`<div style="text-align:center;padding:40px 20px;color:var(--text-mute);font-family:monospace;font-size:11px">ПУСТО</div>`);
+    } else {
+      list.forEach((u, i) => {
+        const rank = i + 1;
+        let xpVal = metric === 'profile' ? u.profileXp : ((u.spiritXp && u.spiritXp[metric]) || 0);
+        const lvlVal = levelFromXp(xpVal).level;
+        const rankCls = rank === 1 ? ' top1' : rank === 2 ? ' top2' : rank === 3 ? ' top3' : '';
+        const meCls = u.isMe ? ' me' : '';
+        const sub = (metric === 'profile') ? `${xpVal} XP` : `${xpVal} XP духа`;
+        const nickBlock = u.isMe ? playerNickHTML(u.nick + ' [ТЫ]', { small: true, badgeSize: 18, nickSize: 12, showTitle: true }) : `<div class="ln">${u.nick}</div>`;
+        rows.push(`<div class="leader-row${rankCls}${meCls}" data-id="${u.id || ''}" style="cursor:pointer">
+          <div class="lrank">#${rank}</div>
+          <div class="lav">${avatarSVG(u.avatar || 'default', 44)}</div>
+          <div class="lnick">${nickBlock}<div class="lsub">${sub}</div></div>
+          <div class="lval">LVL ${lvlVal}</div>
+        </div>`);
+      });
+    }
+
+    cont.innerHTML = rows.join('');
+    
+    cont.querySelectorAll('.leader-tab').forEach(btn => {
+      btn.onclick = () => { playClick(460); _leadersTab = btn.dataset.tab; renderLeadersList(); };
+    });
+
+    const search = document.getElementById('leader-search');
+    if (search) {
+      search.oninput = (e) => {
+        const val = e.target.value.toLowerCase();
+        cont.querySelectorAll('.leader-row').forEach(r => {
+          const name = r.querySelector('.ln') ? r.querySelector('.ln').textContent.toLowerCase() : '';
+          r.style.display = name.includes(val) ? 'flex' : 'none';
+        });
+      };
+    }
+
+    cont.querySelectorAll('.leader-row').forEach(row => {
+      row.onclick = () => {
+        const id = row.dataset.id;
+        if (!id || id === cloudSyncCode) return;
+        playClick(450);
+        openPlayerProfile(id);
+      };
+    });
+  };
+
+  // --- Вспомогательная функция для рендера ника (чужого) ---
+  function renderOtherNick(data, tGloryLvl) {
+    const titleId = data.title || 0;
+    const badgeLvl = data.badge || 0;
+    const titleColorIdx = data.titleColor || 0;
+    const tc = TITLE_COLORS[titleColorIdx] || TITLE_COLORS[0];
+    
+    const badgeValid = badgeLvl >= 1 && badgeLvl <= 18 && badgeLvl <= tGloryLvl;
+    const titleDef = titleId >= 1 && titleId <= GLORY_TITLES.length ? GLORY_TITLES[titleId - 1] : null;
+    const titleValid = titleDef && titleDef.req <= tGloryLvl;
+
+    let html = `<div style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;line-height:1.2">`;
+    if (titleValid) {
+      html += `<div style="font-size:10px;letter-spacing:2px;color:${tc.color};font-family:monospace;font-weight:900;text-shadow:0 0 6px ${tc.color}99,0 0 3px ${tc.color}">${titleDef.name}</div>`;
+    }
+    html += `<div style="display:flex;align-items:center;gap:6px">`;
+    if (badgeValid) {
+      html += `<span style="display:inline-flex;flex-shrink:0;line-height:1">${medalSVG(badgeLvl, 22)}</span>`;
+    }
+    html += `<span style="font-size:18px;letter-spacing:4px;color:var(--bone);font-family:monospace">${data.nick}</span>`;
+    html += `</div></div>`;
+    return html;
+  }
+
+  // --- Окно чужого профиля (С БАННЕРОМ И ТИТУЛОМ) ---
+  window.openPlayerProfile = async function(id) {
+    let modal = document.getElementById('view-player-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'view-player-modal';
+      modal.className = 'modal';
+      modal.innerHTML = `<div class="modal-head"><div class="modal-title" id="vp-title">ПРОФИЛЬ ИГРОКА</div><button class="modal-close" onclick="document.getElementById('view-player-modal').classList.remove('on')">ЗАКРЫТЬ</button></div><div style="max-width:600px;margin:0 auto" id="vp-content">ЗАГРУЗКА...</div>`;
+      document.body.appendChild(modal);
+    }
+    modal.classList.add('on');
+    
+    const cont = document.getElementById('vp-content');
+    let data;
+    try {
+      const snap = await fbDb.collection('saves').doc(id).get();
+      if (!snap.exists) throw new Error('Нет данных');
+      data = snap.data();
+    } catch(e) { cont.innerHTML = 'Ошибка загрузки'; return; }
+
+    // Считаем уровень славы ЧУЖОГО игрока
+    let tXp = 0;
+    if (data.glory) {
+      for (const k in data.glory) {
+        const g = data.glory[k];
+        tXp += ((g.claimedWins?.length || 0) + (g.claimedGames?.length || 0)) * 100;
+      }
+    }
+    const tGloryLevel = Math.min(18, Math.floor(tXp / 1000));
+    const isFriend = PROFILE.friends.includes(id);
+    const st = data.stats || { matches:0, wins:0, losses:0, kills:0, deaths:0, souls:0 };
+
+    const wr = st.matches > 0 ? Math.round((st.wins / st.matches) * 100) : 0;
+    const kd = st.deaths > 0 ? (st.kills / st.deaths).toFixed(2) : (st.kills > 0 ? st.kills.toFixed(2) : '0.00');
+
+    // Рендер шапки с баннером
+    let headerHtml = `
+      <div class="block" style="margin-bottom:14px;display:flex;gap:16px;align-items:center;position:relative;overflow:hidden;padding:20px 14px;">
+    `;
+    
+    // Если есть баннер - рисуем его
+    if (data.banner) {
+      const bSet = data.bannerSettings || {};
+      const bOp = (bSet.op || 100) / 100;
+      const bBright = bSet.bright || 100;
+      const bSat = bSet.sat || 100;
+      const bDim = (bSet.dim || 60) / 100;
+      
+      headerHtml += `
+        <div style="position:absolute;inset:0;z-index:0;background-image:url(${data.banner});background-size:cover;background-position:center;opacity:${bOp};filter:brightness(${bBright}%) saturate(${bSat}%)"></div>
+        <div style="position:absolute;inset:0;z-index:0;background:linear-gradient(180deg, transparent 0%, rgba(5,5,7,${bDim}) 100%)"></div>
+      `;
+    }
+
+    headerHtml += `
+        <div style="width:72px;height:72px;border-radius:50%;background:#050507;border:2px solid var(--blood-soft);overflow:hidden;flex-shrink:0;position:relative;z-index:1;box-shadow:0 0 16px rgba(0,0,0,0.8)">${avatarSVG(data.avatar || 'default', 72)}</div>
+        <div style="flex:1;min-width:0;position:relative;z-index:1;text-shadow:0 2px 4px rgba(0,0,0,0.8)">
+          ${renderOtherNick(data, tGloryLevel)}
+          <div style="font-size:11px;letter-spacing:2px;color:var(--text-dim);font-family:monospace;margin-top:4px">LVL ${levelFromXp(data.xp || 0).level} · ${data.xp || 0} XP</div>
+          <div style="font-size:11px;letter-spacing:2px;color:#ffe89a;font-family:monospace;margin-top:2px">СЛАВА ${tGloryLevel} / 18</div>
+        </div>
+      </div>
+    `;
+
+    let html = headerHtml;
+
+    // Статистика
+    html += `
+      <div class="stitle" style="margin-top:0">// ОБЩАЯ СТАТИСТИКА</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin-bottom:14px">
+        ${statCell('МАТЧИ', st.matches, 'var(--bone)')}
+        ${statCell('ПОБЕДЫ', st.wins, '#5fa8ff')}
+        ${statCell('ПОРАЖЕНИЯ', st.losses, '#e05a5a')}
+        ${statCell('ВИНРЕЙТ', wr + '%', wr >= 50 ? '#5fa8ff' : '#e05a5a')}
+        ${statCell('УБИЙСТВА', st.kills, '#e0b94a')}
+        ${statCell('СМЕРТИ', st.deaths, '#e05a5a')}
+        ${statCell('K/D', kd, parseFloat(kd) >= 1 ? '#5fa8ff' : '#e05a5a')}
+      </div>
+    `;
+
+    if (data.spiritStats) {
+      html += `<div class="stitle">// СТАТИСТИКА ДУХОВ</div>`;
+      SPIRITS.forEach(sp => {
+        const sst = data.spiritStats[sp.id];
+        if (sst && sst.matches > 0) {
+           const spWr = Math.round((sst.wins / sst.matches) * 100);
+           const spKd = sst.deaths > 0 ? (sst.kills / sst.deaths).toFixed(1) : sst.kills;
+           html += `<div class="detail-row"><span class="dr-label">${sp.name}</span><span class="dr-value">${sst.matches} м. · WR ${spWr}% · K/D ${spKd}</span></div>`;
+        }
+      });
+    }
+
+    html += `<button class="sclose" id="vp-add-friend" style="margin-top:16px; ${isFriend ? 'border-color:#4ac26a;color:#4ac26a' : ''}">${isFriend ? 'УЖЕ В ДРУЗЬЯХ' : 'ДОБАВИТЬ В ДРУЗЬЯ'}</button>`;
+    
+    cont.innerHTML = html;
+    
+    if (!isFriend) {
+      document.getElementById('vp-add-friend').onclick = () => sendFriendRequest(id);
+    }
+  };
+
+  window.sendFriendRequest = async function(targetId) {
+    const btn = document.getElementById('vp-add-friend');
+    btn.textContent = 'ОТПРАВКА...';
+    
+    try {
+      const snap = await fbDb.collection('saves').doc(targetId).get();
+      const tData = snap.data();
+      const privacy = tData.privacy ? tData.privacy.friendReq : 1;
+
+      if (privacy === 2) {
+        alert('Этот игрок запретил добавлять его в друзья.');
+        btn.textContent = 'ЗАПРЕЩЕНО';
+        return;
+      }
+
+      if (privacy === 0) {
+        PROFILE.friends.push(targetId);
+        saveProfile(); cloudSave();
+        let tFriends = tData.friends || [];
+        if (!tFriends.includes(cloudSyncCode)) tFriends.push(cloudSyncCode);
+        await fbDb.collection('saves').doc(targetId).update({ friends: tFriends });
+        alert('Игрок добавлен в друзья!');
+        document.getElementById('view-player-modal').classList.remove('on');
+      } else {
+        let tReqs = tData.incomingReqs || [];
+        if (!tReqs.includes(cloudSyncCode)) {
+          tReqs.push(cloudSyncCode);
+          await fbDb.collection('saves').doc(targetId).update({ incomingReqs: tReqs });
+          alert('Заявка отправлена!');
+        } else {
+          alert('Ты уже отправил заявку.');
+        }
+        btn.textContent = 'ЗАЯВКА ОТПРАВЛЕНА';
+        btn.style.borderColor = '#e0b94a'; btn.style.color = '#e0b94a';
+      }
+    } catch(e) {
+      alert('Ошибка сети');
+      btn.textContent = 'ОШИБКА';
+    }
+  };
+
+  // --- Остальной код друзей и приватности (без изменений) ---
+  window.openFriendsModal = async function() {
+    let modal = document.getElementById('friends-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'friends-modal';
+      modal.className = 'modal';
+      modal.innerHTML = `<div class="modal-head"><div class="modal-title">ДРУЗЬЯ</div><button class="modal-close" onclick="document.getElementById('friends-modal').classList.remove('on')">ЗАКРЫТЬ</button></div><div style="max-width:600px;margin:0 auto" id="friends-content">ЗАГРУЗКА...</div>`;
+      document.body.appendChild(modal);
+    }
+    modal.classList.add('on');
+    
+    const cont = document.getElementById('friends-content');
+    cont.innerHTML = 'ЗАГРУЗКА...';
+
+    try {
+      const mySnap = await fbDb.collection('saves').doc(cloudSyncCode).get();
+      if (mySnap.exists) {
+        const d = mySnap.data();
+        PROFILE.friends = d.friends || [];
+        PROFILE.incomingReqs = d.incomingReqs || [];
+        saveProfile();
+      }
+    } catch(e){}
+
+    const rows = [];
+
+    if (PROFILE.incomingReqs.length > 0) {
+      rows.push(`<div class="stitle" style="color:#e0b94a">// ВХОДЯЩИЕ ЗАЯВКИ (${PROFILE.incomingReqs.length})</div>`);
+      for (const reqId of PROFILE.incomingReqs) {
+        try {
+          const s = await fbDb.collection('saves').doc(reqId).get();
+          if (s.exists) {
+            const d = s.data();
+            rows.push(`
+              <div class="leader-row" style="border-color:#6a5a20;background:rgba(30,20,8,.4)">
+                <div class="lav">${avatarSVG(d.avatar || 'default', 44)}</div>
+                <div class="lnick"><div class="ln">${d.nick}</div><div class="lsub">Хочет в друзья</div></div>
+                <div style="display:flex;gap:4px">
+                  <button class="modal-close" onclick="acceptFriend('${reqId}')" style="padding:6px 10px;background:rgba(74,194,106,.2);border-color:#4ac26a;color:#4ac26a">✓</button>
+                  <button class="modal-close" onclick="declineFriend('${reqId}')" style="padding:6px 10px;background:rgba(139,26,26,.4);border-color:#e05a5a;color:#e05a5a">✗</button>
+                </div>
+              </div>
+            `);
+          }
+        } catch(e){}
+      }
+    }
+
+    rows.push(`<div class="stitle">// МОИ ДРУЗЬЯ (ТОП)</div>`);
+    const list = [];
+    if (PROFILE.friends.length === 0) {
+      rows.push('<div style="text-align:center;padding:20px;color:var(--text-mute);font-size:12px">Пока никого нет</div>');
+    } else {
+      for (const fid of PROFILE.friends) {
+        try {
+          const snap = await fbDb.collection('saves').doc(fid).get();
+          if (snap.exists) {
+            const d = snap.data();
+            list.push({ id: fid, nick: d.nick, avatar: d.avatar, xp: d.xp || 0 });
+          }
+        } catch(e){}
+      }
+      list.push({ id: cloudSyncCode, nick: PROFILE.nick + ' [ТЫ]', avatar: PROFILE.avatar, xp: PROFILE.xp });
+      list.sort((a, b) => b.xp - a.xp);
+
+      list.forEach((u, i) => {
+        const rank = i + 1;
+        const rankCls = rank === 1 ? ' top1' : rank === 2 ? ' top2' : rank === 3 ? ' top3' : '';
+        const meCls = u.id === cloudSyncCode ? ' me' : '';
+        rows.push(`
+          <div class="leader-row${rankCls}${meCls}">
+            <div class="lrank">#${rank}</div>
+            <div class="lav">${avatarSVG(u.avatar || 'default', 44)}</div>
+            <div class="lnick"><div class="ln">${u.nick}</div><div class="lsub">${u.xp} XP</div></div>
+            <div class="lval">LVL ${levelFromXp(u.xp).level}</div>
+          </div>
+        `);
+      });
+    }
+
+    cont.innerHTML = rows.join('');
+  };
+
+  window.acceptFriend = async function(reqId) {
+    if (!PROFILE.friends.includes(reqId)) PROFILE.friends.push(reqId);
+    PROFILE.incomingReqs = PROFILE.incomingReqs.filter(id => id !== reqId);
+    saveProfile(); cloudSave();
+
+    try {
+      const snap = await fbDb.collection('saves').doc(reqId).get();
+      if (snap.exists) {
+        const tData = snap.data();
+        let tFriends = tData.friends || [];
+        if (!tFriends.includes(cloudSyncCode)) tFriends.push(cloudSyncCode);
+        await fbDb.collection('saves').doc(reqId).update({ friends: tFriends });
+      }
+    } catch(e){ console.error(e); }
+
+    openFriendsModal();
+  };
+
+  window.declineFriend = async function(reqId) {
+    PROFILE.incomingReqs = PROFILE.incomingReqs.filter(id => id !== reqId);
+    saveProfile(); cloudSave();
+    openFriendsModal(); 
+  };
+
+  setInterval(() => {
+    const modal = document.getElementById('settings-modal');
+    if (!modal || !modal.classList.contains('on')) return;
+    if (document.getElementById('s-privacy')) return; 
+
+    const title = Array.from(modal.querySelectorAll('.stitle')).find(el => el.textContent.includes('Управление'));
+    if (!title) return;
+
+    const currentPrivacy = PROFILE.privacy.friendReq;
+    title.insertAdjacentHTML('afterend', `
+      <div class="srow" style="margin-bottom:20px; background:rgba(10,10,13,.6); border:1px solid var(--border-2); padding:10px; border-radius:2px">
+        <span style="color:var(--bone)">Заявки в друзья</span>
+        <div class="seg" id="s-privacy" style="width:100%; justify-content:space-between">
+          <button data-v="0" class="${currentPrivacy === 0 ? 'on' : ''}" style="flex:1">Мгновенно</button>
+          <button data-v="1" class="${currentPrivacy === 1 ? 'on' : ''}" style="flex:1">По запросу</button>
+          <button data-v="2" class="${currentPrivacy === 2 ? 'on' : ''}" style="flex:1">Запрещено</button>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('s-privacy').querySelectorAll('button').forEach(btn => {
+      btn.onclick = () => {
+        PROFILE.privacy.friendReq = parseInt(btn.dataset.v);
+        document.getElementById('s-privacy').querySelectorAll('button').forEach(b => b.classList.toggle('on', parseInt(b.dataset.v) === PROFILE.privacy.friendReq));
+        saveProfile(); cloudSave();
+      };
+    });
+  }, 500);
+
+  // Твой профиль (оставляем как был, с баннером и кнопкой друзей)
+  const _origOpenProfile = window.openProfile || openProfile;
+  window.openProfile = function() {
+    _origOpenProfile();
+    const cont = document.getElementById('profile-content');
+    if (!cont) return;
+
+    const header = cont.querySelector('.block');
+    if (header) {
+      let bannerDiv = document.getElementById('profile-banner');
+      if (!bannerDiv) {
+        bannerDiv = document.createElement('div');
+        bannerDiv.id = 'profile-banner';
+        bannerDiv.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;z-index:0;background-size:cover;background-position:center;opacity:0;pointer-events:none;';
+        bannerDiv.innerHTML = '<div id="profile-banner-overlay" style="position:absolute;inset:0;background:linear-gradient(180deg, transparent 0%, rgba(5,5,7,0.95) 100%)"></div>';
+        header.style.position = 'relative'; header.style.overflow = 'hidden';
+        header.insertBefore(bannerDiv, header.firstChild);
+        Array.from(header.children).forEach(c => { if (c.id !== 'profile-banner') { c.style.position = 'relative'; c.style.zIndex = '1'; } });
+      }
+      const bData = localStorage.getItem('soulfeed_banner');
+      const bSet = JSON.parse(localStorage.getItem('soulfeed_banner_settings') || '{}');
+      if (bData) {
+        bannerDiv.style.backgroundImage = `url(${bData})`;
+        bannerDiv.style.opacity = (bSet.op || 100) / 100;
+        bannerDiv.style.filter = `brightness(${bSet.bright || 100}%) saturate(${bSet.sat || 100}%)`;
+        document.getElementById('profile-banner-overlay').style.background = `linear-gradient(180deg, transparent 0%, rgba(5,5,7,${(bSet.dim || 60)/100}) 100%)`;
+      } else {
+        bannerDiv.style.backgroundImage = 'none'; bannerDiv.style.opacity = '0';
+      }
+    }
+
+    const nickTitle = Array.from(cont.querySelectorAll('.stitle')).find(el => el.textContent.includes('НИК'));
+    if (nickTitle && !document.getElementById('btn-open-friends')) {
+      let reqBadge = PROFILE.incomingReqs && PROFILE.incomingReqs.length > 0 ? ` <span style="color:#e0b94a">(+${PROFILE.incomingReqs.length})</span>` : '';
+      nickTitle.insertAdjacentHTML('beforebegin', `
+        <div class="stitle">// ДРУЗЬЯ</div>
+        <button class="sclose" id="btn-open-friends" style="margin-top:0;margin-bottom:14px">СПИСОК ДРУЗЕЙ${reqBadge}</button>
+      `);
+      document.getElementById('btn-open-friends').onclick = () => { playClick(400); openFriendsModal(); };
+    }
+
+    if (nickTitle && !document.getElementById('btn-upload-banner')) {
+      const bSet = JSON.parse(localStorage.getItem('soulfeed_banner_settings') || '{}');
+      const bOp = bSet.op || 100, bBright = bSet.bright || 100, bSat = bSet.sat || 100, bDim = bSet.dim || 60;
+      nickTitle.insertAdjacentHTML('beforebegin', `
+        <div class="stitle">// БАННЕР ПРОФИЛЯ</div>
+        <div class="block" style="margin-bottom:14px">
+          <div style="display:flex;gap:8px;margin-bottom:8px">
+            <button class="modal-close" id="btn-upload-banner" style="flex:1;padding:8px;background:rgba(139,26,26,.55);border-color:var(--blood);color:var(--bone)">ВЫБРАТЬ</button>
+            <button class="modal-close" id="btn-clear-banner" style="flex:1;padding:8px">СБРОС</button>
+          </div>
+          <div class="srow" style="padding:4px 0"><span>Прозрачность</span><input type="range" id="b-op" min="10" max="100" value="${bOp}"><span class="sval" id="b-op-v">${bOp}</span></div>
+          <div class="srow" style="padding:4px 0"><span>Яркость</span><input type="range" id="b-bright" min="20" max="150" value="${bBright}"><span class="sval" id="b-bright-v">${bBright}</span></div>
+          <div class="srow" style="padding:4px 0"><span>Насыщенность</span><input type="range" id="b-sat" min="0" max="200" value="${bSat}"><span class="sval" id="b-sat-v">${bSat}</span></div>
+          <div class="srow" style="padding:4px 0"><span>Затемнение</span><input type="range" id="b-dim" min="0" max="100" value="${bDim}"><span class="sval" id="b-dim-v">${bDim}</span></div>
+        </div>
+      `);
+      
+      const saveB = () => {
+        localStorage.setItem('soulfeed_banner_settings', JSON.stringify({ op: +document.getElementById('b-op').value, bright: +document.getElementById('b-bright').value, sat: +document.getElementById('b-sat').value, dim: +document.getElementById('b-dim').value }));
+        const bDiv = document.getElementById('profile-banner');
+        if (bDiv) {
+          bDiv.style.opacity = (+document.getElementById('b-op').value) / 100;
+          bDiv.style.filter = `brightness(${document.getElementById('b-bright').value}%) saturate(${document.getElementById('b-sat').value}%)`;
+          document.getElementById('profile-banner-overlay').style.background = `linear-gradient(180deg, transparent 0%, rgba(5,5,7,${(+document.getElementById('b-dim').value)/100}) 100%)`;
+        }
+        cloudSave();
+      };
+      
+      ['b-op', 'b-bright', 'b-sat', 'b-dim'].forEach(id => {
+        document.getElementById(id).oninput = (e) => { document.getElementById(id + '-v').textContent = e.target.value; saveB(); };
+      });
+
+      document.getElementById('btn-upload-banner').onclick = () => {
+        const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/*';
+        input.onchange = e => {
+          const file = e.target.files[0]; if(!file) return;
+          const reader = new FileReader();
+          reader.onload = ev => {
+            const img = new Image();
+            img.onload = () => {
+              const canvas = document.createElement('canvas');
+              const scale = Math.min(1024 / img.width, 512 / img.height, 1);
+              canvas.width = img.width * scale; canvas.height = img.height * scale;
+              canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+              try { localStorage.setItem('soulfeed_banner', canvas.toDataURL('image/jpeg', 0.75)); } catch(e){ alert('Слишком большая'); return; }
+              openProfile();
+            };
+            img.src = ev.target.result;
+          };
+          reader.readAsDataURL(file);
+        };
+        input.click();
+      };
+
+      document.getElementById('btn-clear-banner').onclick = () => { localStorage.removeItem('soulfeed_banner'); openProfile(); };
+    }
+  };
+})();
+// ==========================================
+// МОДУЛЬ: КЛАНЫ + ЧАТ (v1)
+// ==========================================
+(function(){
+  if (typeof PROFILE.clanId === 'undefined') PROFILE.clanId = null;
+  if (!PROFILE.clanCooldownUntil) PROFILE.clanCooldownUntil = 0;
+  if (!PROFILE.clansDisbanded) PROFILE.clansDisbanded = 0;
+
+  const _origCollect = window.collectProfileData || collectProfileData;
+  window.collectProfileData = function(){
+    const d = _origCollect();
+    d.clanId = PROFILE.clanId;
+    d.clanCooldownUntil = PROFILE.clanCooldownUntil;
+    d.clansDisbanded = PROFILE.clansDisbanded;
+    return d;
+  };
+  const _origApply = window.applyProfileData || applyProfileData;
+  window.applyProfileData = function(data){
+    const r = _origApply(data);
+    if (data.clanId !== undefined) PROFILE.clanId = data.clanId;
+    if (data.clanCooldownUntil !== undefined) PROFILE.clanCooldownUntil = data.clanCooldownUntil;
+    if (data.clansDisbanded !== undefined) PROFILE.clansDisbanded = data.clansDisbanded;
+    return r;
+  };
+
+  // Кнопка КЛАН в профиле
+  setInterval(() => {
+    const cont = document.getElementById('profile-content');
+    if (!cont || document.getElementById('btn-open-clan')) return;
+    const nickTitle = Array.from(cont.querySelectorAll('.stitle')).find(el => el.textContent.includes('НИК'));
+    if (!nickTitle) return;
+    nickTitle.insertAdjacentHTML('beforebegin', `
+      <div class="stitle">// КЛАН</div>
+      <button class="sclose" id="btn-open-clan" style="margin-top:0;margin-bottom:14px">МОЙ КЛАН</button>`);
+    document.getElementById('btn-open-clan').onclick = () => { playClick(400); openClanMenu(); };
+  }, 500);
+
+  window.openClanMenu = function(){
+    if (PROFILE.clanId){ openClanView(PROFILE.clanId); return; }
+    let modal = document.getElementById('clan-menu-modal');
+    if (!modal){
+      modal = document.createElement('div');
+      modal.id = 'clan-menu-modal'; modal.className = 'modal';
+      modal.innerHTML = `<div class="modal-head"><div class="modal-title">КЛАНЫ</div><button class="modal-close" onclick="document.getElementById('clan-menu-modal').classList.remove('on')">ЗАКРЫТЬ</button></div><div style="max-width:600px;margin:0 auto" id="clan-menu-content"></div>`;
+      document.body.appendChild(modal);
+    }
+    const lvl = levelFromXp(PROFILE.xp).level;
+    const cd = PROFILE.clanCooldownUntil > Date.now();
+    const cdH = cd ? Math.ceil((PROFILE.clanCooldownUntil - Date.now())/3600000) : 0;
+    document.getElementById('clan-menu-content').innerHTML = `
+      <div class="stitle">// ДЕЙСТВИЯ</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button class="sclose" id="clan-act-create" style="margin-top:0;${lvl<3||cd?'opacity:.4':''}">СОЗДАТЬ КЛАН ${lvl<3?'(с 3 lvl)':cd?'(кулдаун '+cdH+'ч)':''}</button>
+        <button class="sclose" id="clan-act-list" style="margin-top:0">ТОП КЛАНОВ</button>
+      </div>`;
+    document.getElementById('clan-act-create').onclick = () => {
+      if (lvl < 3){ alert('Клан можно создать с 3 уровня.'); return; }
+      if (cd){ alert('Кулдаун после роспуска: '+cdH+' ч.'); return; }
+      openClanEditor(null);
+    };
+    document.getElementById('clan-act-list').onclick = () => openClanList();
+    modal.classList.add('on');
+  };
+
+  window.openClanList = async function(){
+    let modal = document.getElementById('clan-list-modal');
+    if (!modal){
+      modal = document.createElement('div');
+      modal.id = 'clan-list-modal'; modal.className = 'modal';
+      modal.innerHTML = `<div class="modal-head"><div class="modal-title">ТОП КЛАНОВ</div><button class="modal-close" onclick="document.getElementById('clan-list-modal').classList.remove('on')">ЗАКРЫТЬ</button></div><div style="max-width:600px;margin:0 auto" id="clan-list-content">ЗАГРУЗКА...</div>`;
+      document.body.appendChild(modal);
+    }
+    modal.classList.add('on');
+    const cont = document.getElementById('clan-list-content');
+    cont.innerHTML = 'ЗАГРУЗКА...';
+    try {
+      const snap = await fbDb.collection('clans').get();
+      const clans = [];
+      snap.forEach(d => { const c = d.data(); c.id = d.id; clans.push(c); });
+      clans.sort((a,b) => (b.totalXp||0) - (a.totalXp||0));
+      const rows = [`<div class="stitle">// ТОП ПО XP</div>`];
+      if (!clans.length) rows.push('<div style="text-align:center;padding:30px;color:var(--text-mute)">Пусто</div>');
+      clans.forEach((c,i) => {
+        rows.push(`<div class="leader-row" data-clan="${c.id}" style="cursor:pointer">
+          <div class="lrank">#${i+1}</div>
+          <div class="lav" style="border-color:${c.frameColor||'#8b1a1a'}">${c.avatar?`<img src="${c.avatar}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`:(c.tag||'?').slice(0,2)}</div>
+          <div class="lnick"><div class="ln">[${c.tag||'?'}] ${c.name}</div><div class="lsub">${(c.members||[]).length} участников</div></div>
+          <div class="lval">${c.totalXp||0} XP</div>
+        </div>`);
+      });
+      cont.innerHTML = rows.join('');
+      cont.querySelectorAll('[data-clan]').forEach(row => row.onclick = () => { playClick(400); openClanView(row.dataset.clan); });
+    } catch(e){ cont.innerHTML = 'Ошибка: ' + e.message; }
+  };
+
+  window.openClanView = async function(clanId){
+    let modal = document.getElementById('clan-view-modal');
+    if (!modal){
+      modal = document.createElement('div');
+      modal.id = 'clan-view-modal'; modal.className = 'modal';
+      modal.innerHTML = `<div class="modal-head"><div class="modal-title" id="clan-view-title">КЛАН</div><button class="modal-close" onclick="document.getElementById('clan-view-modal').classList.remove('on')">ЗАКРЫТЬ</button></div><div style="max-width:700px;margin:0 auto" id="clan-view-content">ЗАГРУЗКА...</div>`;
+      document.body.appendChild(modal);
+    }
+    modal.classList.add('on');
+    const cont = document.getElementById('clan-view-content');
+    cont.innerHTML = 'ЗАГРУЗКА...';
+    try {
+      const doc = await fbDb.collection('clans').doc(clanId).get();
+      if (!doc.exists){ cont.innerHTML = 'Клан не найден'; return; }
+      const c = doc.data();
+      const isMember = (c.members||[]).includes(cloudSyncCode);
+      const isOwner = c.ownerId === cloudSyncCode;
+      const isAdmin = (c.admins||[]).includes(cloudSyncCode);
+      const canEdit = isOwner || isAdmin;
+
+      const memberProfiles = await Promise.all((c.members||[]).map(async (uid) => {
+        try { const s = await fbDb.collection('saves').doc(uid).get(); return { id: uid, ...s.data() }; } catch(e){ return { id: uid, nick: 'unknown', xp: 0 }; }
+      }));
+      memberProfiles.sort((a,b) => (b.xp||0) - (a.xp||0));
+
+      const rows = [];
+      const bs = c.bannerSettings || {};
+      rows.push(`<div class="block" style="margin-bottom:14px;position:relative;overflow:hidden;padding:24px 14px;border-radius:6px">
+        ${c.banner?`<div style="position:absolute;inset:0;z-index:0;background-image:url(${c.banner});background-size:cover;background-position:center;filter:brightness(${bs.bright||100}%) saturate(${bs.sat||100}%);opacity:${(bs.op||100)/100}"></div><div style="position:absolute;inset:0;z-index:0;background:linear-gradient(180deg,transparent 0%,rgba(5,5,7,${(bs.dim||60)/100}) 100%)"></div>`:''}
+        <div style="position:relative;z-index:1;display:flex;align-items:center;gap:14px">
+          <div style="width:72px;height:72px;border-radius:50%;background:#050507;border:3px solid ${c.frameColor||'#8b1a1a'};overflow:hidden;display:flex;align-items:center;justify-content:center;box-shadow:0 0 24px ${c.frameColor||'#8b1a1a'}88;flex-shrink:0">
+            ${c.avatar?`<img src="${c.avatar}" style="width:100%;height:100%;object-fit:cover">`:`<span style="font-size:24px;font-weight:900;color:${c.frameColor||'#d8d8d2'}">${(c.tag||'??').slice(0,2)}</span>`}
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:20px;letter-spacing:3px;color:var(--bone);font-family:monospace">[${c.tag}] ${c.name}</div>
+            <div style="font-size:11px;color:var(--text-dim);font-family:monospace;margin-top:4px">${memberProfiles.length} / ${c.maxMembers||20} · ${c.totalXp||0} XP</div>
+          </div>
+        </div>
+      </div>`);
+
+      const actions = [];
+      if (!isMember) actions.push(`<button class="sclose" id="clan-btn-join" style="margin-top:0">ВСТУПИТЬ</button>`);
+      else {
+        if (canEdit) actions.push(`<button class="sclose" id="clan-btn-edit" style="margin-top:0">РЕДАКТОР</button>`);
+        actions.push(`<button class="sclose" id="clan-btn-chat" style="margin-top:0">ЧАТ КЛАНА</button>`);
+        actions.push(`<button class="sclose" id="clan-btn-leave" style="margin-top:0;border-color:#e05a5a;color:#e05a5a">ВЫЙТИ</button>`);
+      }
+      if (actions.length) rows.push(`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">${actions.join('')}</div>`);
+
+      rows.push(`<div class="stitle">// СОСТАВ (ТОП)</div>`);
+      memberProfiles.forEach((m,i) => {
+        const role = c.ownerId===m.id?'ВЛАДЕЛЕЦ':(c.admins||[]).includes(m.id)?'АДМИН':(c.mods||[]).includes(m.id)?'МОДЕР':'УЧАСТНИК';
+        const isMe = m.id === cloudSyncCode;
+        rows.push(`<div class="leader-row ${isMe?'me':''}" data-uid="${m.id}" style="cursor:pointer">
+          <div class="lrank">#${i+1}</div>
+          <div class="lav">${avatarSVG(m.avatar||'default',44)}</div>
+          <div class="lnick"><div class="ln">${m.nick||'Unknown'}${isMe?' [ТЫ]':''}</div><div class="lsub">${role} · LVL ${levelFromXp(m.xp||0).level}</div></div>
+          <div class="lval">${m.xp||0} XP</div>
+        </div>`);
+      });
+      cont.innerHTML = rows.join('');
+
+      const b1 = document.getElementById('clan-btn-join'); if (b1) b1.onclick = () => joinClan(clanId, c);
+      const b2 = document.getElementById('clan-btn-edit'); if (b2) b2.onclick = () => openClanEditor(clanId, c);
+      const b3 = document.getElementById('clan-btn-chat'); if (b3) b3.onclick = () => openChat('clan_'+clanId, '['+c.tag+'] '+c.name);
+      const b4 = document.getElementById('clan-btn-leave'); if (b4) b4.onclick = () => leaveClan(clanId, c);
+      cont.querySelectorAll('[data-uid]').forEach(row => {
+        row.onclick = () => { const uid = row.dataset.uid; if (uid && uid !== cloudSyncCode) openPlayerProfile(uid); };
+      });
+    } catch(e){ cont.innerHTML = 'Ошибка: ' + e.message; }
+  };
+
+  window.openClanEditor = function(clanId, data){
+    let modal = document.getElementById('clan-editor-modal');
+    if (!modal){
+      modal = document.createElement('div');
+      modal.id = 'clan-editor-modal'; modal.className = 'modal';
+      modal.innerHTML = `<div class="modal-head"><div class="modal-title" id="clan-editor-title">СОЗДАНИЕ КЛАНА</div><button class="modal-close" onclick="document.getElementById('clan-editor-modal').classList.remove('on')">ЗАКРЫТЬ</button></div><div style="max-width:600px;margin:0 auto;padding:0 10px 20px" id="clan-editor-content"></div>`;
+      document.body.appendChild(modal);
+    }
+    modal.classList.add('on');
+    const isNew = !clanId;
+    const c = data || { name:'', tag:'', avatar:'', banner:'', bannerSettings:{}, frameColor:'#8b1a1a', privacy:{join:0}, maxMembers:20 };
+    document.getElementById('clan-editor-title').textContent = isNew ? 'СОЗДАНИЕ КЛАНА' : 'РЕДАКТОР КЛАНА';
+    const nameChanged = !isNew && c.nameChanges > 0;
+    const tagChanged = !isNew && c.tagChanges > 0;
+    const canAvatar = isNew || !c.lastAvatarChange || (Date.now()-c.lastAvatarChange > 7*24*3600000);
+    const canBanner = isNew || !c.lastBannerChange || (Date.now()-c.lastBannerChange > 7*24*3600000);
+
+    document.getElementById('clan-editor-content').innerHTML = `
+      <div class="stitle">// ОСНОВНОЕ</div>
+      <div class="srow" style="flex-direction:column;align-items:stretch;gap:6px">
+        <span style="font-size:10px;color:var(--text-dim)">Название ${nameChanged?'(смена использована)':''}</span>
+        <input type="text" id="ce-name" maxlength="20" value="${c.name}" ${nameChanged?'disabled':''} style="background:rgba(10,10,14,.8);border:1px solid var(--border-2);color:var(--bone);padding:10px;font-family:monospace;font-size:13px;letter-spacing:2px;border-radius:2px;outline:none">
+      </div>
+      <div class="srow" style="flex-direction:column;align-items:stretch;gap:6px">
+        <span style="font-size:10px;color:var(--text-dim)">Тег (2-4 символа) ${tagChanged?'(смена использована)':''}</span>
+        <input type="text" id="ce-tag" maxlength="4" value="${c.tag}" ${tagChanged?'disabled':''} style="background:rgba(10,10,14,.8);border:1px solid var(--border-2);color:var(--bone);padding:10px;font-family:monospace;font-size:13px;letter-spacing:2px;border-radius:2px;outline:none;text-transform:uppercase">
+      </div>
+      <div class="srow" style="flex-direction:column;align-items:stretch;gap:6px">
+        <span style="font-size:10px;color:var(--text-dim)">Приватность</span>
+        <div class="seg" id="ce-privacy" style="width:100%">
+          <button data-v="0" class="${c.privacy?.join===0?'on':''}" style="flex:1">Свободно</button>
+          <button data-v="1" class="${c.privacy?.join===1?'on':''}" style="flex:1">По заявке</button>
+          <button data-v="2" class="${c.privacy?.join===2?'on':''}" style="flex:1">Закрыто</button>
+        </div>
+      </div>
+      <div class="stitle">// ВНЕШНИЙ ВИД</div>
+      <div class="srow"><span>Цвет рамки</span><input type="color" id="ce-frame" value="${c.frameColor||'#8b1a1a'}" style="width:60px;height:34px;border:none;background:transparent;cursor:pointer"></div>
+      <div class="srow" style="flex-direction:column;align-items:stretch;gap:6px">
+        <span style="font-size:10px;color:var(--text-dim)">Аватар ${!canAvatar?'(раз в неделю)':''}</span>
+        <button class="modal-close" id="ce-av-btn" ${!canAvatar?'disabled':''} style="padding:8px;background:rgba(139,26,26,.55);border-color:var(--blood);color:var(--bone)">ВЫБРАТЬ ИЗ ГАЛЕРЕИ</button>
+      </div>
+      <div class="srow" style="flex-direction:column;align-items:stretch;gap:6px">
+        <span style="font-size:10px;color:var(--text-dim)">Баннер ${!canBanner?'(раз в неделю)':''}</span>
+        <button class="modal-close" id="ce-bn-btn" ${!canBanner?'disabled':''} style="padding:8px;background:rgba(139,26,26,.55);border-color:var(--blood);color:var(--bone)">ВЫБРАТЬ ИЗ ГАЛЕРЕИ</button>
+      </div>
+      <div id="ce-bn-settings" style="display:${c.banner?'block':'none'}">
+        <div class="srow"><span>Прозрачность</span><input type="range" id="ce-bn-op" min="10" max="100" value="${c.bannerSettings?.op||100}"><span class="sval" id="ce-bn-op-v">${c.bannerSettings?.op||100}</span></div>
+        <div class="srow"><span>Яркость</span><input type="range" id="ce-bn-bright" min="20" max="150" value="${c.bannerSettings?.bright||100}"><span class="sval" id="ce-bn-bright-v">${c.bannerSettings?.bright||100}</span></div>
+        <div class="srow"><span>Насыщенность</span><input type="range" id="ce-bn-sat" min="0" max="200" value="${c.bannerSettings?.sat||100}"><span class="sval" id="ce-bn-sat-v">${c.bannerSettings?.sat||100}</span></div>
+        <div class="srow"><span>Затемнение</span><input type="range" id="ce-bn-dim" min="0" max="100" value="${c.bannerSettings?.dim||60}"><span class="sval" id="ce-bn-dim-v">${c.bannerSettings?.dim||60}</span></div>
+      </div>
+      <button class="sclose" id="ce-save" style="margin-top:16px">${isNew?'СОЗДАТЬ':'СОХРАНИТЬ'}</button>
+      ${!isNew && c.ownerId===cloudSyncCode?`<button class="sclose" id="ce-delete" style="margin-top:8px;border-color:#e05a5a;color:#e05a5a">РАСПУСТИТЬ КЛАН</button>`:''}`;
+
+    let newAvatar = c.avatar||'', newBanner = c.banner||'', privacyVal = c.privacy?.join ?? 0;
+    document.querySelectorAll('#ce-privacy button').forEach(b => b.onclick = () => { privacyVal = +b.dataset.v; document.querySelectorAll('#ce-privacy button').forEach(x=>x.classList.toggle('on',+x.dataset.v===privacyVal)); });
+
+    document.getElementById('ce-av-btn').onclick = () => {
+      const inp = document.createElement('input'); inp.type='file'; inp.accept='image/*';
+      inp.onchange = e => {
+        const f = e.target.files[0]; if(!f) return;
+        const rd = new FileReader();
+        rd.onload = ev => {
+          const img = new Image();
+          img.onload = () => {
+            const cv = document.createElement('canvas'); cv.width=cv.height=128;
+            const cx = cv.getContext('2d');
+            const s = Math.min(img.width, img.height);
+            cx.drawImage(img,(img.width-s)/2,(img.height-s)/2,s,s,0,0,128,128);
+            newAvatar = cv.toDataURL('image/jpeg',0.8);
+            document.getElementById('ce-av-btn').textContent = 'АВАТАР ЗАГРУЖЕН ✓';
+          };
+          img.src = ev.target.result;
+        };
+        rd.readAsDataURL(f);
+      };
+      inp.click();
+    };
+
+    document.getElementById('ce-bn-btn').onclick = () => {
+      const inp = document.createElement('input'); inp.type='file'; inp.accept='image/*';
+      inp.onchange = e => {
+        const f = e.target.files[0]; if(!f) return;
+        const rd = new FileReader();
+        rd.onload = ev => {
+          const img = new Image();
+          img.onload = () => {
+            const cv = document.createElement('canvas');
+            const sc = Math.min(1024/img.width, 512/img.height, 1);
+            cv.width = img.width*sc; cv.height = img.height*sc;
+            cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+            newBanner = cv.toDataURL('image/jpeg',0.75);
+            document.getElementById('ce-bn-btn').textContent = 'БАННЕР ЗАГРУЖЕН ✓';
+            document.getElementById('ce-bn-settings').style.display = 'block';
+          };
+          img.src = ev.target.result;
+        };
+        rd.readAsDataURL(f);
+      };
+      inp.click();
+    };
+
+    ['op','bright','sat','dim'].forEach(k => {
+      const el = document.getElementById('ce-bn-'+k);
+      if (el) el.oninput = () => { document.getElementById('ce-bn-'+k+'-v').textContent = el.value; };
+    });
+
+    document.getElementById('ce-save').onclick = async () => {
+      const name = document.getElementById('ce-name').value.trim();
+      const tag = document.getElementById('ce-tag').value.trim().toUpperCase();
+      if (name.length < 2){ alert('Название минимум 2 символа'); return; }
+      if (tag.length < 2 || tag.length > 4){ alert('Тег 2-4 символа'); return; }
+      if (isNew){
+        const chk = await fbDb.collection('clans').where('tag','==',tag).get();
+        if (!chk.empty){ alert('Такой тег уже занят'); return; }
+      }
+      const bs = {
+        op: +(document.getElementById('ce-bn-op')?.value || 100),
+        bright: +(document.getElementById('ce-bn-bright')?.value || 100),
+        sat: +(document.getElementById('ce-bn-sat')?.value || 100),
+        dim: +(document.getElementById('ce-bn-dim')?.value || 60)
+      };
+      const payload = { name, tag, avatar: newAvatar, banner: newBanner, bannerSettings: bs, frameColor: document.getElementById('ce-frame').value, privacy: { join: privacyVal } };
+      try {
+        if (isNew){
+          payload.ownerId = cloudSyncCode;
+          payload.members = [cloudSyncCode];
+          payload.admins = []; payload.mods = [];
+          payload.createdAt = Date.now();
+          payload.totalXp = Math.max(0, Math.round(PROFILE.xp || 0));
+          payload.nameChanges = 0; payload.tagChanges = 0;
+          payload.lastAvatarChange = newAvatar ? Date.now() : 0;
+          payload.lastBannerChange = newBanner ? Date.now() : 0;
+          const ref = await fbDb.collection('clans').add(payload);
+          PROFILE.clanId = ref.id;
+        } else {
+          if (c.name !== name) payload.nameChanges = (c.nameChanges||0) + 1;
+          if (c.tag !== tag) payload.tagChanges = (c.tagChanges||0) + 1;
+          if (newAvatar !== c.avatar) payload.lastAvatarChange = Date.now();
+          if (newBanner !== c.banner) payload.lastBannerChange = Date.now();
+          await fbDb.collection('clans').doc(clanId).update(payload);
+        }
+        saveProfile(); await cloudSave();
+        document.getElementById('clan-editor-modal').classList.remove('on');
+        openClanView(isNew ? PROFILE.clanId : clanId);
+      } catch(e){ alert('Ошибка: ' + e.message); }
+    };
+
+    const delBtn = document.getElementById('ce-delete');
+    if (delBtn) delBtn.onclick = async () => {
+      if (!confirm('Распустить клан? Восстановление невозможно.')) return;
+      try {
+        await fbDb.collection('clans').doc(clanId).delete();
+        PROFILE.clanId = null;
+        PROFILE.clansDisbanded = (PROFILE.clansDisbanded||0) + 1;
+        const owns = PROFILE.clansDisbanded - 1;
+        const days = owns === 0 ? 10 : owns === 1 ? 20 : 30;
+        PROFILE.clanCooldownUntil = Date.now() + days*24*3600000;
+        saveProfile(); await cloudSave();
+        document.getElementById('clan-editor-modal').classList.remove('on');
+        document.getElementById('clan-view-modal').classList.remove('on');
+        openClanMenu();
+      } catch(e){ alert(e.message); }
+    };
+  };
+
+  window.joinClan = async function(clanId, c){
+    if (c.privacy?.join === 2){ alert('Клан закрыт'); return; }
+    if (c.privacy?.join === 1){
+      try {
+        await fbDb.collection('clans').doc(clanId).collection('requests').doc(cloudSyncCode).set({ at: Date.now(), nick: PROFILE.nick, xp: PROFILE.xp });
+        alert('Заявка отправлена');
+      } catch(e){ alert(e.message); }
+      return;
+    }
+    if ((c.members||[]).length >= (c.maxMembers || 20)){ alert('Клан полон'); return; }
+    try {
+      const members = (c.members||[]).slice();
+      if (!members.includes(cloudSyncCode)) members.push(cloudSyncCode);
+      await fbDb.collection('clans').doc(clanId).update({ members });
+      PROFILE.clanId = clanId;
+      saveProfile(); await cloudSave();
+      await recalcClanTotalXp(clanId);
+      openClanView(clanId);
+    } catch(e){ alert(e.message); }
+  };
+
+  window.leaveClan = async function(clanId, c){
+    if (c.ownerId === cloudSyncCode){ alert('Владелец не может выйти — распусти или передай клан'); return; }
+    if (!confirm('Выйти из клана?')) return;
+    try {
+      const members = (c.members||[]).filter(m => m !== cloudSyncCode);
+      await fbDb.collection('clans').doc(clanId).update({ members });
+      PROFILE.clanId = null;
+      saveProfile(); await cloudSave();
+      document.getElementById('clan-view-modal').classList.remove('on');
+      openClanMenu();
+    } catch(e){ alert(e.message); }
+  };
+
+  async function recalcClanTotalXp(clanId){
+    try {
+      const doc = await fbDb.collection('clans').doc(clanId).get();
+      const members = doc.data().members || [];
+      let total = 0;
+      for (const m of members){
+        try { const s = await fbDb.collection('saves').doc(m).get(); total += Math.max(0, Math.round(s.data()?.xp||0)); } catch(e){}
+      }
+      await fbDb.collection('clans').doc(clanId).update({ totalXp: total });
+    } catch(e){}
+  }
+
+  // ===== ЧАТ =====
+  window.openChat = function(chatId, title){
+    let modal = document.getElementById('chat-modal');
+    if (!modal){
+      modal = document.createElement('div');
+      modal.id = 'chat-modal'; modal.className = 'modal';
+      modal.innerHTML = `
+        <div class="modal-head"><div class="modal-title" id="chat-title">ЧАТ</div><button class="modal-close" id="chat-close">ЗАКРЫТЬ</button></div>
+        <div style="max-width:600px;margin:0 auto;display:flex;flex-direction:column;height:calc(100vh - 140px)">
+          <div id="chat-messages" style="flex:1;overflow-y:auto;padding:10px;background:rgba(5,5,10,.6);border:1px solid var(--border-2);border-radius:4px;display:flex;flex-direction:column;gap:6px"></div>
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <input type="text" id="chat-input" placeholder="Сообщение..." style="flex:1;background:rgba(10,10,14,.8);border:1px solid var(--border-2);color:var(--bone);padding:10px;font-family:monospace;font-size:12px;border-radius:2px;outline:none">
+            <button class="modal-close" id="chat-send" style="padding:10px 16px">➤</button>
+          </div>
+        </div>`;
+      document.body.appendChild(modal);
+      document.getElementById('chat-close').onclick = () => {
+        modal.classList.remove('on');
+        if (window._chatUnsub){ window._chatUnsub(); window._chatUnsub = null; }
+      };
+    }
+    document.getElementById('chat-title').textContent = title;
+    modal.classList.add('on');
+    const list = document.getElementById('chat-messages');
+    const input = document.getElementById('chat-input');
+
+    if (window._chatUnsub){ window._chatUnsub(); }
+    window._chatUnsub = fbDb.collection('chats').doc(chatId).collection('messages').orderBy('at','asc').limitToLast(100).onSnapshot(snap => {
+      list.innerHTML = '';
+      snap.forEach(d => {
+        const m = d.data(); const isMe = m.from === cloudSyncCode;
+        const el = document.createElement('div');
+        el.style.cssText = `padding:6px 10px;border-radius:8px;max-width:80%;align-self:${isMe?'flex-end':'flex-start'};background:${isMe?'rgba(139,26,26,.5)':'rgba(30,30,40,.8)'};font-family:monospace;font-size:11px;color:var(--bone);word-break:break-word`;
+        const time = new Date(m.at).toLocaleTimeString().slice(0,5);
+        el.innerHTML = `<div style="font-size:9px;color:var(--text-dim);margin-bottom:2px">${m.nick||m.from.slice(0,6)} · ${time}</div>${(m.text||'').replace(/</g,'&lt;')}`;
+        list.appendChild(el);
+        list.scrollTop = list.scrollHeight;
+      });
+    });
+
+    document.getElementById('chat-send').onclick = async () => {
+      const txt = input.value.trim(); if (!txt) return;
+      input.value = '';
+      try { await fbDb.collection('chats').doc(chatId).collection('messages').add({ from: cloudSyncCode, nick: PROFILE.nick, text: txt, at: Date.now() }); }
+      catch(e){ alert(e.message); }
+    };
+  };
+
+  // Кнопка «НАПИСАТЬ» в профиле игрока
+  const _origPlayerProfile = window.openPlayerProfile;
+  window.openPlayerProfile = async function(id){
+    await _origPlayerProfile(id);
+    const cont = document.getElementById('vp-content');
+    if (!cont) return;
+    const addBtn = document.getElementById('vp-add-friend');
+    if (addBtn && !document.getElementById('vp-chat')){
+      const chatBtn = document.createElement('button');
+      chatBtn.id = 'vp-chat'; chatBtn.className = 'sclose';
+      chatBtn.style.cssText = 'margin-top:8px;border-color:#5fa8ff;color:#5fa8ff';
+      chatBtn.textContent = 'НАПИСАТЬ';
+      chatBtn.onclick = () => {
+        const ids = [cloudSyncCode, id].sort();
+        openChat('dm_'+ids[0]+'_'+ids[1], 'ЛС');
+      };
+      addBtn.parentNode.insertBefore(chatBtn, addBtn.nextSibling);
+    }
+  };
 })();
 </script>
 </body>
