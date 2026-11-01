@@ -7004,6 +7004,503 @@ setInterval(() => {
     } catch(e) { alert(e.message); }
   };
 })();
+(function(){
+  if (window._pocketPatchApplied) return;
+  window._pocketPatchApplied = true;
+
+  window._currentAttacker = null;
+
+  function nearestBotTo(x, y, maxRange){
+    let best = null, bd = maxRange || 500;
+    for (const b of BOTS){
+      if (!b.alive) continue;
+      const d = Math.hypot(b.x - x, b.y - y);
+      if (d < bd){ bd = d; best = b; }
+    }
+    return best;
+  }
+  function nearestAllyTo(x, y, maxRange){
+    let best = null, bd = maxRange || 500;
+    for (const a of ALLIES){
+      if (!a.alive) continue;
+      const d = Math.hypot(a.x - x, a.y - y);
+      if (d < bd){ bd = d; best = a; }
+    }
+    return best;
+  }
+
+  // === damageBot ===
+  window.damageBot = damageBot = function(b, dmg, source, killer){
+    if (!b || !b.alive) return;
+    const src = source || 'player';
+    const now = performance.now();
+    b.lastCombatAt = now;
+    if (b.spiritId === 'bulwark' && hasAllyNearby(b, 245)) dmg = Math.round(dmg * 0.85);
+    if (inBush(b)) b.revealedUntil = now + BUSH_REVEAL_MS;
+    let dmgColor = '#e05a5a';
+    if (SETTINGS.coloredDmg){
+      if (src === 'player') dmgColor = '#5fa8ff';
+      else if (src === 'ally') dmgColor = '#4ac26a';
+      else if (src === 'avert') dmgColor = '#aa44ff';
+      else if (src === 'antimark') dmgColor = '#ffffff';
+    }
+    b.hp -= dmg; b.hitFlash = 0.18;
+    spawnDamageNumber(b.x, b.y - 40, dmg, dmgColor, false);
+    if (SETTINGS.hitsparks) spawnParticles(b.x, b.y, dmgColor, 4);
+    if (SETTINGS.hitRings) spawnHitRing(b.x, b.y, dmgColor, 36, 0.3, 3);
+    if (b.hp <= 0){
+      b.alive = false;
+      const dIdxB = b.deaths || 0;
+      const rTimesB = [8000, 12000, 16000, 20000];
+      b.respawnAt = now + rTimesB[Math.min(dIdxB, 3)];
+      const dropped = Math.floor(b.pocket * 0.5);
+      b.pocket -= dropped;
+      let picker = killer || null;
+      if (!picker && src === 'player' && player && player.alive) picker = player;
+      if (!picker && src === 'ally') picker = nearestAllyTo(b.x, b.y, 300) || window._currentAttacker;
+      if (picker && picker.alive && dropped > 0){
+        picker.pocket = Math.min(500, (picker.pocket || 0) + dropped);
+        if (picker === player) setLog('◆ +' + dropped + ' душ с врага');
+        else if (ALLIES.includes(picker)) notify('Союзник +' + dropped + ' душ', '#5fa8ff');
+      }
+      b.killerKind = src; b.deaths = (b.deaths||0)+1;
+      b.action = null;
+      const spDeath = SPIRITS.find(s => s.id === b.spiritId);
+      const dcolor = spDeath ? spDeath.color : b.color;
+      if (SETTINGS.deathRing) spawnHitRing(b.x, b.y, dcolor, 80, 0.6, 5);
+      spawnParticles(b.x, b.y, dcolor, SETTINGS.particles?22:0);
+      if (src === 'player'){ notify('Ты убил врага', '#5fa8ff'); playerMatchKills++; if (player) player.kills = (player.kills||0)+1; }
+      else if (src === 'ally'){ notify('Союзник убил врага', '#5fa8ff'); if (picker) picker.kills = (picker.kills||0)+1; }
+    }
+  };
+
+  // === damageAlly ===
+  window.damageAlly = damageAlly = function(a, dmg, killer){
+    if (!a || !a.alive) return;
+    const k = killer || window._currentAttacker || null;
+    if (player && player.alive && player.interceptTarget === a && player.interceptUntil > performance.now()){
+      damagePlayer(dmg, k);
+      return;
+    }
+    if (inBush(a)) a.revealedUntil = performance.now() + BUSH_REVEAL_MS;
+    a.hp -= dmg; a.lastCombatAt = performance.now();
+    spawnDamageNumber(a.x, a.y - 40, dmg, '#e0a05a', false);
+    if (SETTINGS.hitsparks) spawnParticles(a.x, a.y, '#e0a05a', 4);
+    if (SETTINGS.hitRings) spawnHitRing(a.x, a.y, '#e0a05a', 36, 0.3, 3);
+    if (a.hp <= 0){
+      a.alive = false;
+      const dIdx = a.deaths || 0;
+      const rTimes = [8000, 12000, 16000, 20000];
+      a.respawnAt = performance.now() + rTimes[Math.min(dIdx, 3)];
+      const dropped = Math.floor(a.pocket * 0.5);
+      a.pocket -= dropped;
+      let picker = k;
+      if (!picker) picker = nearestBotTo(a.x, a.y, 300);
+      if (picker && picker.alive && dropped > 0 && BOTS.includes(picker)){
+        picker.pocket = Math.min(500, (picker.pocket || 0) + dropped);
+      }
+      a.deaths = (a.deaths||0)+1;
+      a.action = null;
+      if (SETTINGS.deathRing) spawnHitRing(a.x, a.y, a.color, 80, 0.6, 5);
+      spawnParticles(a.x, a.y, a.color, SETTINGS.particles?22:0);
+      notify('Союзник погиб', '#e05a5a');
+    }
+  };
+
+  // === damagePlayer ===
+  window.damagePlayer = damagePlayer = function(dmg, killer){
+    if (!player || !player.alive) return;
+    const k = killer || window._currentAttacker || null;
+    if (k) player.lastDamager = k;
+    const now = performance.now();
+    player.lastCombatAt = now;
+    if (player.spiritId === 'bulwark' && hasAllyNearby(player, 245)) dmg = Math.round(dmg * 0.85);
+    if (inBush(player)) player.revealedUntil = now + BUSH_REVEAL_MS;
+    player.lastHitX = player.x;
+    player.lastHitY = player.y;
+    player.hp -= dmg; player.hitFlash = 0.22; player.lastHit = now;
+    spawnDamageNumber(player.x, player.y - 40, dmg, '#ff3030', true);
+    if (SETTINGS.hitsparks) spawnParticles(player.x, player.y, '#ff3030', 6);
+    if (SETTINGS.hitRings) spawnHitRing(player.x, player.y, '#ff3030', 40, 0.32, 4);
+    if (SETTINGS.screenshake) camShake = Math.min(0.35, camShake + 0.18);
+    flashHit(); vibrate(30); playHurtSound();
+    if (player.hp <= 0){
+      player.alive = false;
+      const deathIdx = player.deaths || 0;
+      const respawnTimes = [8000, 12000, 16000, 20000];
+      player.respawnAt = now + respawnTimes[Math.min(deathIdx, 3)];
+      const dropped = Math.floor(player.pocket * 0.5);
+      player.pocket -= dropped;
+      let picker = k || player.lastDamager || nearestBotTo(player.x, player.y, 500);
+      if (picker && picker.alive && dropped > 0 && BOTS.includes(picker)){
+        picker.pocket = Math.min(500, (picker.pocket || 0) + dropped);
+      }
+      player.lastDamager = null;
+      player.greedyFlying = false;
+      player.umbraControl = { target: null, until: 0 };
+      if (SETTINGS.deathRing) spawnHitRing(player.x, player.y, player.color, 100, 0.7, 6);
+      spawnParticles(player.x, player.y, player.color, SETTINGS.particles?26:0);
+      if (SETTINGS.screenshake) camShake = 0.5;
+      vibrate([60,40,60]); setLog('☠ Ты погиб'); notify('Вас убили', '#e05a5a');
+      playerMatchDeaths++; player.deaths = (player.deaths||0)+1;
+    }
+  };
+
+  // === wrap botThink — трекаем текущего бота ===
+  const _origBotThink = botThink;
+  window.botThink = botThink = function(unit, isAlly, dt){
+    const prev = window._currentAttacker;
+    window._currentAttacker = unit;
+    try { return _origBotThink.call(this, unit, isAlly, dt); }
+    finally { window._currentAttacker = prev; }
+  };
+
+  // === полный botCastSkill — чиним урон/стан по союзникам ===
+  window.botCastSkill = botCastSkill = function(b, idx, dir, pos, isAlly){
+    if (!b.skills) b.skills = [0,0,0];
+    if (b.skills[idx] > 0) return false;
+    const sid = b.spiritId;
+    const _sp = SPIRITS.find(x => x.id === sid);
+    b.skills[idx] = (_sp && _sp.skills[idx] && _sp.skills[idx].cd) ? _sp.skills[idx].cd : [8, 10, 8][idx];
+    let R = skillRange(sid, idx);
+    spawnParticles(b.x, b.y, b.color, 14);
+    const visualTarget = (isAlly)
+      ? (() => { let best=null, bd=R+60; for (const bb of BOTS){ if (!bb.alive) continue; const d=Math.hypot(bb.x-pos.x,bb.y-pos.y); if (d<bd){bd=d;best=bb;} } return best; })()
+      : player;
+    if (visualTarget && visualTarget.alive){
+      const vcolor = _sp ? _sp.color : b.color;
+      spawnParticles(visualTarget.x, visualTarget.y, vcolor, 8);
+    }
+    let damage = 0, stun = 0;
+    if (sid === 'tether'){
+      if (idx === 0) damage = 60;
+      else if (idx === 1){
+        if (!b._stakes) b._stakes = [];
+        if (b._stakes.length >= 3){ b._stakes = []; }
+        const step = 140;
+        const px = b.x + dir.x * step * (b._stakes.length + 1);
+        const py = b.y + dir.y * step * (b._stakes.length + 1);
+        if (canStand(px, py) && canStandInPlayable(px, py)) b._stakes.push({ x: px, y: py });
+      }
+      else if (idx === 2){ damage = 100; stun = 1000; R = Math.min(R, 220); }
+    }
+    else if (sid === 'sunblink'){ if (idx === 0) stun = 2000; else if (idx === 1){ sunbeams.push({ x:pos.x, y:pos.y, r:80, delay:2, t:0, owner:b, botBeam:true }); R = Math.min(R, 320); } }
+    else if (sid === 'heal'){ if (idx === 0) { const mates = (isAlly ? [player, ...ALLIES] : BOTS); for (const u of mates){ if (u !== b && u.alive && u.hp < u.maxHp * 0.5) u.hp = u.maxHp; } if (b.hp < b.maxHp * 0.5) b.hp = b.maxHp; } else if (idx === 1) newEffect({ type:'healPool', x:pos.x, y:pos.y, r:70, ttl:10, color:'#4ac26a', botPool:true }); else if (idx === 2) damage = Math.round((b.maxHp - b.hp) * 0.3); }
+    else if (sid === 'stare'){ if (idx === 1) newEffect({ type:'eye', x:pos.x, y:pos.y, r:80, ttl:10, color:'#9b6edb', hitTick:{}, botEye:true, owner:b }); else if (idx === 2) damage = 60; }
+    else if (sid === 'madflare'){ if (idx === 0) newEffect({ type:'fireAround', follow:b, r:2*M, ttl:5, color:'#e0752a', botFire:true, owner:b }); else if (idx === 1){ effects.push({ type:'cone', x:b.x, y:b.y, dir:dir, r:R, ttl:1.2, maxTtl:1.2, color:'#e0752a', waves:3, waveTimer:0, hitSet:{}, owner:b, botCone:true }); } else if (idx === 2) b.speedBoost = { mult:1.5, until: performance.now() + 8000 }; }
+    else if (sid === 'bulwark'){ if (idx === 0) newEffect({ type:'wall', x:pos.x, y:pos.y, angle:Math.atan2(dir.y, dir.x), w:3*M, h:16, ttl:3, color:'#8a8a96', botWall:true }); else if (idx === 1) damage = 80; }
+    else if (sid === 'thunder'){ if (idx === 0) b.speedBoost = { mult:1.5, until: performance.now() + 500 }; else if (idx === 1){ damage = 100; if (SETTINGS.hitRings) spawnHitRing(pos.x, pos.y, '#e8d640', 70, 0.4, 4); spawnParticles(pos.x, pos.y, '#e8d640', 20); } else if (idx === 2) b.hp = Math.min(b.maxHp, b.hp + 200); }
+    else if (sid === 'hemora'){ if (idx === 1){ projectiles.push({ type:'blood', x:b.x, y:b.y, vx:dir.x*540, vy:dir.y*540, ttl:0.52, color:'#c33a3a', owner:b, botBullet:true }); } else if (idx === 2) newEffect({ type:'bloodZone', follow:b, r:2*M, ttl:3, color:'#c33a3a', charges:0, hitSet:{}, botBlood:true, owner:b }); }
+    else if (sid === 'umbra'){ if (idx === 0) stun = 3000; else if (idx === 2){ damage = 100; R = Math.min(R, 220); umbraShadows.push({ x:pos.x, y:pos.y, r:40, targetR:130, ttl:6, maxTtl:6, hitTick:{}, botShadow:true, owner:b }); } }
+
+    if (damage > 0){
+      if (isAlly){
+        let bestB = null, bd = R + 60;
+        for (const bb of BOTS){ if (!bb.alive) continue; const d = Math.hypot(bb.x - pos.x, bb.y - pos.y); if (d < bd){ bd = d; bestB = bb; } }
+        if (bestB) damageBot(bestB, damage, 'ally', b);
+      } else {
+        const targets = [];
+        if (player && player.alive) targets.push({ u: player, isPlayer: true });
+        for (const a of ALLIES) if (a.alive) targets.push({ u: a, isPlayer: false });
+        for (const tgt of targets){
+          if (unitHiddenInBush(tgt.u)) continue;
+          const ownLOS = piercesWalls(sid, idx) ? true : hasLineOfSight(b.x, b.y, tgt.u.x, tgt.u.y);
+          if (!ownLOS) continue;
+          const d = Math.hypot(tgt.u.x - b.x, tgt.u.y - b.y);
+          if (d < R){
+            if (tgt.isPlayer) damagePlayer(damage, b);
+            else damageAlly(tgt.u, damage, b);
+          }
+        }
+      }
+    }
+
+    if (stun > 0 && !isAlly){
+      const targets = [];
+      if (player && player.alive) targets.push({ u: player, isPlayer: true });
+      for (const a of ALLIES) if (a.alive) targets.push({ u: a, isPlayer: false });
+      for (const tgt of targets){
+        if (unitHiddenInBush(tgt.u)) continue;
+        const ownLOS = piercesWalls(sid, idx) ? true : hasLineOfSight(b.x, b.y, tgt.u.x, tgt.u.y);
+        if (!ownLOS) continue;
+        const d = Math.hypot(tgt.u.x - b.x, tgt.u.y - b.y);
+        if (d < R){
+          if (tgt.isPlayer) player.stunUntil = performance.now() + stun;
+          else tgt.u.stunUntil = performance.now() + stun;
+        }
+      }
+    }
+    return true;
+  };
+})();
+</script>
+<script>
+(function(){
+  if (window._patch2Applied) return;
+  window._patch2Applied = true;
+
+  // ============================================
+  // 1. СТАН ИГРОКА — теперь реально работает
+  // ============================================
+  const _origUpdJoy = updJoy;
+  window.updJoy = updJoy = function(cx, cy){
+    if (player && player.alive){
+      const now = performance.now();
+      if ((player.stunUntil && player.stunUntil > now) ||
+          (player.controlledUntil && player.controlledUntil > now)){
+        input.mx = 0; input.my = 0;
+        return;
+      }
+    }
+    return _origUpdJoy.apply(this, arguments);
+  };
+
+  const _origDoAttack = doAttack;
+  window.doAttack = doAttack = function(){
+    if (!player || !player.alive || !MATCH_READY) return;
+    const now = performance.now();
+    if ((player.stunUntil && player.stunUntil > now) ||
+        (player.controlledUntil && player.controlledUntil > now)) return;
+    return _origDoAttack.apply(this, arguments);
+  };
+
+  const _origCastFromAim = castFromAim;
+  window.castFromAim = castFromAim = function(idx, dir, tx, ty){
+    if (!player || !player.alive) return;
+    const now = performance.now();
+    if ((player.stunUntil && player.stunUntil > now) ||
+        (player.controlledUntil && player.controlledUntil > now)) return;
+    return _origCastFromAim.apply(this, arguments);
+  };
+
+  // ============================================
+  // 2. RESIZE — ловим смену размера для зума
+  // ============================================
+  let _lastW = window.innerWidth, _lastH = window.innerHeight;
+  setInterval(function(){
+    const w = window.innerWidth, h = window.innerHeight;
+    if (w !== _lastW || h !== _lastH){
+      _lastW = w; _lastH = h;
+      if (typeof window.resize === 'function'){
+        try { window.resize(); } catch(e){}
+      }
+    }
+  }, 250);
+
+  // ============================================
+  // 3. КУСТЫ — бот в кустах больше не виден на поле
+  // ============================================
+  const _origIsVisiblePoint = isVisiblePoint;
+  window.isVisiblePoint = isVisiblePoint = function(x, y, now){
+    for (const b of BOTS){
+      if (!b.alive) continue;
+      if (!unitHiddenInBush(b)) continue;
+      if (Math.abs(b.x - x) < 1 && Math.abs(b.y - y) < 1) return false;
+    }
+    return _origIsVisiblePoint.apply(this, arguments);
+  };
+
+  // ============================================
+  // 4. HEMORA Q — не тратит КД вхолостую
+  // ============================================
+  const _origCastHemora = castHemora;
+  window.castHemora = castHemora = function(i, dir, pos, R, t){
+    if (i === 0){
+      if (player.lastHitX === null || t - player.lastHit > 5000){
+        setLog('🩸 Урона не было');
+        return;                       // ← КД не тратим
+      }
+      const tx = player.lastHitX, ty = player.lastHitY;
+      if (!canStand(tx, ty) || !canStandInPlayable(tx, ty)){
+        setLog('🩸 Место недоступно');
+        return;                       // ← КД не тратим
+      }
+      player.skills[0] = 8;           // ← только при успехе
+      spawnParticles(player.x, player.y, '#c33a3a', 12);
+      player.x = tx; player.y = ty;
+      spawnParticles(player.x, player.y, '#c33a3a', 16);
+      if (SETTINGS.hitRings) spawnHitRing(player.x, player.y, '#c33a3a', 60, 0.5, 4);
+      setLog('🩸 К последнему удару');
+      return;
+    }
+    return _origCastHemora.apply(this, arguments);
+  };
+
+  // ============================================
+  // 5. STARE E — ослепление реально работает
+  // ============================================
+  const _origCastStare = castStare;
+  window.castStare = castStare = function(i, dir, pos, R, t){
+    if (i === 2){
+      if (player.skills[2] > 0) return;
+      let best = null, bd = R;
+      for (const b of BOTS){
+        if (!b.alive) continue;
+        const dx = b.x - player.x, dy = b.y - player.y;
+        const proj = dx * dir.x + dy * dir.y;
+        if (proj < 20) continue;
+        const perp = Math.abs(-dx * dir.y + dy * dir.x);
+        if (perp > 80) continue;
+        const d = Math.hypot(dx, dy);
+        if (d < bd){ bd = d; best = b; }
+      }
+      if (!best){ setLog('👁 Промах'); return; }
+      best.blindUntil = t + 5000;
+      best._blindFrom = { until: t + 5000 };
+      player.skills[2] = 8;
+      setLog('👁 Слепота 5с');
+      return;
+    }
+    return _origCastStare.apply(this, arguments);
+  };
+
+  // Ослеплённый бот видит только на 1м
+  const _origIsVisibleFrom = isVisibleFrom;
+  window.isVisibleFrom = isVisibleFrom = function(unit, x, y){
+    if (unit && unit._blindFrom && unit._blindFrom.until > performance.now()){
+      const dx = x - unit.x, dy = y - unit.y;
+      if (dx*dx + dy*dy > M * M) return false;
+    }
+    return _origIsVisibleFrom.apply(this, arguments);
+  };
+
+  // ============================================
+  // 6. ЗАВИСАНИЕ БОТОВ У ОГЛУШЁННЫХ
+  //    умный бот ставит attackCd=0.3 и НЕ бьёт —
+  //    перехватываем это значение через setter
+  // ============================================
+  function patchBotCd(b){
+    if (b._cdPatched) return;
+    b._cdPatched = true;
+    let cd = b.attackCd || 0;
+    try {
+      Object.defineProperty(b, 'attackCd', {
+        configurable: true,
+        get(){ return cd; },
+        set(v){
+          if (v === 0.3 && b.action === 'chase' && b.actionTarget && b.actionTarget.alive){
+            const tgt = b.actionTarget;
+            const now = performance.now();
+            const stunned = (tgt.stunUntil && tgt.stunUntil > now) ||
+                            (tgt.controlledUntil && tgt.controlledUntil > now);
+            if (stunned && hasLineOfSight(b.x, b.y, tgt.x, tgt.y) && Math.hypot(b.x - tgt.x, b.y - tgt.y) < 60){
+              try {
+                const isAlly = ALLIES.includes(b);
+                if (isAlly) damageBot(tgt, 50, 'ally', b);
+                else if (tgt === player) damagePlayer(50, b);
+                else damageAlly(tgt, 50, b);
+              } catch(e){}
+              cd = 0.4;
+              return;
+            }
+          }
+          cd = v;
+        }
+      });
+    } catch(e){}
+  }
+
+  const _origUpdateBots = updateBots;
+  window.updateBots = updateBots = function(dt){
+    if (BOTS) for (const b of BOTS) patchBotCd(b);
+    return _origUpdateBots.apply(this, arguments);
+  };
+  const _origUpdateAllies = updateAllies;
+  window.updateAllies = updateAllies = function(dt){
+    if (ALLIES) for (const a of ALLIES) patchBotCd(a);
+    return _origUpdateAllies.apply(this, arguments);
+  };
+
+  console.log('[PATCH2] Applied OK');
+})();
+</script>
+<script>
+(function(){
+  if (window._patch3Applied) return;
+  window._patch3Applied = true;
+
+  // ============================================
+  // 1. КОВЫ (цепочки Tether) не убираются после смерти
+  //    Игрок с закрытой зоной (kovyZona) возрождается ПАРАЛИЗОВАННЫМ
+  // ============================================
+  const _prevDP = damagePlayer;
+  window.damagePlayer = damagePlayer = function(dmg, killer){
+    const wasAlive = player && player.alive;
+    _prevDP.apply(this, arguments);
+    if (wasAlive && player && !player.alive){
+      player.kovyActive = false;
+      player.kovyZona = false;
+      player.kovyTimer = 0;
+      try { if (typeof stakes !== 'undefined' && Array.isArray(stakes)) stakes.length = 0; } catch(e){}
+      player.sunReturn = null;
+      player.healOverTime = null;
+      player.speedBoost = null;
+      player.interceptTarget = null;
+      player.interceptUntil = 0;
+    }
+  };
+
+  // ============================================
+  // 2. КД скилов ботов/союзников ЗАМИРАЮТ пока те мёртвые
+  //    (skill cds decrement только в botThink, который не вызывается при смерти)
+  // ============================================
+  function trackRespawns(list){
+    for (const u of list){
+      if (u.alive && u._prevAlive === false){
+        u.skills = [0, 0, 0];
+        u.skillCd = 0;
+      }
+      u._prevAlive = u.alive;
+    }
+  }
+  const _origUpdB = updateBots;
+  window.updateBots = updateBots = function(dt){
+    const r = _origUpdB.apply(this, arguments);
+    try { trackRespawns(BOTS); } catch(e){}
+    return r;
+  };
+  const _origUpdA = updateAllies;
+  window.updateAllies = updateAllies = function(dt){
+    const r = _origUpdA.apply(this, arguments);
+    try { trackRespawns(ALLIES); } catch(e){}
+    return r;
+  };
+
+  // ============================================
+  // 3. Боты застревают на одном скиле в КД
+  //    botPickSkill возвращает "лучший" скил, не проверяя КД.
+  //    Если лучший в кд — botCastSkill фейлится, но бот снова
+  //    выбирает его же. Никогда не пробует остальные.
+  // ============================================
+  const _origPick = botPickSkill;
+  window.botPickSkill = botPickSkill = function(b, target, dp, isAlly){
+    const idx = _origPick.apply(this, arguments);
+    if (idx < 0) return idx;
+    if (!b.skills) return idx;
+    if (b.skills[idx] <= 0) return idx;  // лучший скил готов — ок
+    // лучший в кд — берём первый готовый
+    for (let i = 0; i < 3; i++){
+      if (b.skills[i] <= 0) return i;
+    }
+    return -1;  // все на кд
+  };
+
+  // ============================================
+  // 4. На миникарте убитые кристаллы выглядят ЖИВЫМИ
+  //    c.seenActive выставляется в true при создании и НЕКОГДА
+  //    не сбрасывается. Все кристаллы (включая мёртвые) — alpha 1.
+  // ============================================
+  setInterval(function(){
+    try {
+      if (typeof CRYSTALS === 'undefined' || !Array.isArray(CRYSTALS)) return;
+      for (const c of CRYSTALS){
+        c.seenActive = !!c.active;
+      }
+    } catch(e){}
+  }, 100);
+
+  console.log('[PATCH3] Applied OK');
+})();
 </script>
 </body>
 </html>
