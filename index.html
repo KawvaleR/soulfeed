@@ -959,6 +959,7 @@ function migrateGloryFromStats(){
     localStorage.setItem('soulfeed_glory_migrated_v1', '1');
   } catch(e){}
 }
+function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function playerNickHTML(nick, opts){
   opts = opts || {};
   const glLevel = gloryLevelInfo().level;
@@ -984,7 +985,7 @@ function playerNickHTML(nick, opts){
   if (badgeValid){
     html += `<span style="display:inline-flex;flex-shrink:0;line-height:1">${medalSVG(badgeLvl, badgeSize)}</span>`;
   }
-  html += `<span style="font-size:${nickSize}px;letter-spacing:2px;color:var(--bone);font-family:monospace">${nick}</span>`;
+  html += `<span style="font-size:${nickSize}px;letter-spacing:2px;color:var(--bone);font-family:monospace">${escapeHtml(nick)}</span>`;
   html += `</div></div>`;
   return html;
 }
@@ -1695,7 +1696,6 @@ function renderSpiritStatsBlock(sp, sst){
 }
 
 function openProfile(){
-  migrateSpiritStatsFromProfile();
   const l = levelFromXp(PROFILE.xp);
   const s = PROFILE.stats;
   const kd = s.deaths > 0 ? (s.kills / s.deaths).toFixed(2) : (s.kills > 0 ? s.kills.toFixed(2) : '0.00');
@@ -1788,7 +1788,7 @@ rows.push(`<div class="stitle">// НИК</div>`);
   if (rb) rb.onclick = () => {
     playClick(400);
     if (!confirm('ПОЛНЫЙ СБРОС?')) return;
-    PROFILE = { nick:'PLAYER', xp:0, level:1, avatar:'default', stats:{ matches:0, wins:0, losses:0, kills:0, deaths:0, souls:0, crystals:0, totalTimeSec:0, bestKills:0, bestSouls:0 } };
+    PROFILE.xp = 0; PROFILE.stats = { matches:0, wins:0, losses:0, kills:0, deaths:0, souls:0, crystals:0, totalTimeSec:0, bestKills:0, bestSouls:0 }; if(typeof cloudSave === 'function') cloudSave();
     saveProfile();
     SPIRITS.forEach(s => {
       saveSpiritXP(s.id, 0);
@@ -1842,7 +1842,7 @@ async function renderLeadersList(){
       const meCls = u.isMe ? ' me' : '';
       const nameTxt = u.nick + (u.isMe ? ' [ТЫ]' : '');
       const sub = (metric === 'profile') ? `${xpVal} XP` : `${xpVal} XP духа`;
-      const nickBlock = u.isMe ? playerNickHTML(nameTxt, { small: true, badgeSize: 18, nickSize: 12, showTitle: true }) : `<div class="ln">${nameTxt}</div>`;
+      const nickBlock = u.isMe ? playerNickHTML(nameTxt, { small: true, badgeSize: 18, nickSize: 12, showTitle: true }) : `<div class="ln">${escapeHtml(nameTxt)}</div>`;
       rows.push(`<div class="leader-row${rankCls}${meCls}"><div class="lrank">#${rank}</div><div class="lav">${avatarSVG(u.avatar || 'default', 44)}</div><div class="lnick">${nickBlock}<div class="lsub">${sub}</div></div><div class="lval">LVL ${lvlVal}</div></div>`);
     });
   }
@@ -2057,7 +2057,6 @@ function renderGloryTitles(glLevel){
 }
 
 function openGlory(){
-  migrateGloryFromStats();
   _gloryOpenSpirit = null;
   _gloryOpenTitles = false;
   renderGlory();
@@ -3740,10 +3739,10 @@ function updateUniversalEffects(dtS, now){
         e.tick -= 1;
         if (e.botFire){
           const fireLOS = e.owner && e.owner.alive && hasLineOfSight(e.owner.x, e.owner.y, player.x, player.y);
-          if (player && player.alive && fireLOS && Math.hypot(player.x-e.x, player.y-e.y) < e.r + player.r) damagePlayer(50);
+          if (player && player.alive && Math.hypot(player.x-e.x, player.y-e.y) < e.r + player.r) damagePlayer(50, e.owner);
           for (const a of ALLIES){ if (!a.alive) continue; if (fireLOS && Math.hypot(a.x-e.x, a.y-e.y) < e.r + a.r) damageAlly(a, 50); }
         } else {
-          for (const b of BOTS) if (b.alive && Math.hypot(b.x-e.x, b.y-e.y) < e.r + b.r) damageBot(b, 50, 'player');
+          for (const b of BOTS){ if (!b.alive) continue; if (Math.hypot(b.x - e.x, b.y - e.y) < e.r + b.r) damageBot(b, 50, 'player', e.owner); }
         }
       }
     } else if (e.type === 'eye'){
@@ -3751,7 +3750,7 @@ function updateUniversalEffects(dtS, now){
         if (player && player.alive){
           const los = hasLineOfSight(e.x, e.y, player.x, player.y);
           const inside = los && Math.hypot(player.x-e.x, player.y-e.y) < e.r + player.r;
-          if (inside){ e.hitTick['p'] = (e.hitTick['p']||0) + dtS; if (e.hitTick['p'] >= 1){ e.hitTick['p'] -= 1; damagePlayer(100); } } else e.hitTick['p'] = 0;
+          if (inside){ e.hitTick['p'] = (e.hitTick['p']||0) + dtS; if (e.hitTick['p'] >= 1){ e.hitTick['p'] -= 1; damagePlayer(100, e.owner); } } else e.hitTick['p'] = 0;
         }
         for (const a of ALLIES){
           if (!a.alive) continue; const key='a'+a.id;
@@ -3988,14 +3987,14 @@ function botCastSkill(b, idx, dir, pos, isAlly){
     }
     else if (idx === 2){ damage = 100; stun = 1000; R = Math.min(R, 220); }
   }
-  else if (sid === 'sunblink'){ if (idx === 0) stun = 2000; else if (idx === 1){ sunbeams.push({ x:pos.x, y:pos.y, r:80, delay:2, t:0, owner:b, botBeam:true }); R = Math.min(R, 320); } }
-  else if (sid === 'heal'){ if (idx === 0) { const mates = (isAlly ? [player, ...ALLIES] : BOTS); for (const u of mates){ if (u !== b && u.alive && u.hp < u.maxHp * 0.5) u.hp = u.maxHp; } if (b.hp < b.maxHp * 0.5) b.hp = b.maxHp; } else if (idx === 1) newEffect({ type:'healPool', x:pos.x, y:pos.y, r:70, ttl:10, color:'#4ac26a', botPool:true }); else if (idx === 2) damage = Math.round((b.maxHp - b.hp) * 0.3); }
-  else if (sid === 'stare'){ if (idx === 1) newEffect({ type:'eye', x:pos.x, y:pos.y, r:80, ttl:10, color:'#9b6edb', hitTick:{}, botEye:true, owner:b }); else if (idx === 2) damage = 60; }
-  else if (sid === 'madflare'){ if (idx === 0) newEffect({ type:'fireAround', follow:b, r:2*M, ttl:5, color:'#e0752a', botFire:true, owner:b }); else if (idx === 1){ effects.push({ type:'cone', x:b.x, y:b.y, dir:dir, r:R, ttl:1.2, maxTtl:1.2, color:'#e0752a', waves:3, waveTimer:0, hitSet:{}, owner:b, botCone:true }); } else if (idx === 2) b.speedBoost = { mult:1.5, until: performance.now() + 8000 }; }
+  else if (sid === 'sunblink'){ if (idx === 0) stun = 2000; else if (idx === 1){ sunbeams.push({ x:pos.x, y:pos.y, r:80, delay:2, t:0, owner:b, botBeam:!isAlly }); R = Math.min(R, 320); } }
+  else if (sid === 'heal'){ if (idx === 0) { const mates = (isAlly ? [player, ...ALLIES] : BOTS); for (const u of mates){ if (u !== b && u.alive && u.hp < u.maxHp * 0.5) u.hp = u.maxHp; } if (b.hp < b.maxHp * 0.5) b.hp = b.maxHp; } else if (idx === 1) newEffect({ type:'healPool', x:pos.x, y:pos.y, r:70, ttl:10, color:'#4ac26a', botPool:!isAlly }); else if (idx === 2) damage = Math.round((b.maxHp - b.hp) * 0.3); }
+  else if (sid === 'stare'){ if (idx === 1) newEffect({ type:'eye', x:pos.x, y:pos.y, r:80, ttl:10, color:'#9b6edb', hitTick:{}, botEye:!isAlly, owner:b }); else if (idx === 2) damage = 60; }
+  else if (sid === 'madflare'){ if (idx === 0) newEffect({ type:'fireAround', follow:b, r:2*M, ttl:5, color:'#e0752a', botFire:!isAlly, owner:b }); else if (idx === 1){ effects.push({ type:'cone', x:b.x, y:b.y, dir:dir, r:R, ttl:1.2, maxTtl:1.2, color:'#e0752a', waves:3, waveTimer:0, hitSet:{}, owner:b, botCone:!isAlly }); } else if (idx === 2) b.speedBoost = { mult:1.5, until: performance.now() + 8000 }; }
   else if (sid === 'bulwark'){ if (idx === 0) newEffect({ type:'wall', x:pos.x, y:pos.y, angle:Math.atan2(dir.y, dir.x), w:3*M, h:16, ttl:3, color:'#8a8a96', botWall:true }); else if (idx === 1) damage = 80; }
   else if (sid === 'thunder'){ if (idx === 0) b.speedBoost = { mult:1.5, until: performance.now() + 500 }; else if (idx === 1){ damage = 100; if (SETTINGS.hitRings) spawnHitRing(pos.x, pos.y, '#e8d640', 70, 0.4, 4); spawnParticles(pos.x, pos.y, '#e8d640', 20); } else if (idx === 2) b.hp = Math.min(b.maxHp, b.hp + 200); }
-  else if (sid === 'hemora'){ if (idx === 1){ projectiles.push({ type:'blood', x:b.x, y:b.y, vx:dir.x*540, vy:dir.y*540, ttl:0.52, color:'#c33a3a', owner:b, botBullet:true }); } else if (idx === 2) newEffect({ type:'bloodZone', follow:b, r:2*M, ttl:3, color:'#c33a3a', charges:0, hitSet:{}, botBlood:true, owner:b }); }
-  else if (sid === 'umbra'){ if (idx === 0) stun = 3000; else if (idx === 2){ damage = 100; R = Math.min(R, 220); umbraShadows.push({ x:pos.x, y:pos.y, r:40, targetR:130, ttl:6, maxTtl:6, hitTick:{}, botShadow:true, owner:b }); } }
+  else if (sid === 'hemora'){ if (idx === 1){ projectiles.push({ type:'blood', x:b.x, y:b.y, vx:dir.x*540, vy:dir.y*540, ttl:0.52, color:'#c33a3a', owner:b, botBullet:true }); } else if (idx === 2) newEffect({ type:'bloodZone', follow:b, r:2*M, ttl:3, color:'#c33a3a', charges:0, hitSet:{}, botBlood:!isAlly, owner:b }); }
+  else if (sid === 'umbra'){ if (idx === 0) stun = 3000; else if (idx === 2){ damage = 100; R = Math.min(R, 220); umbraShadows.push({ x:pos.x, y:pos.y, r:40, targetR:130, ttl:6, maxTtl:6, hitTick:{}, botShadow:!isAlly, owner:b }); } }
   const botSeesPlayer = !!(player && player.alive && isVisibleFrom(b, player.x, player.y) && !unitHiddenInBush(player));
   if (damage > 0){
     if (isAlly){ let bestB = null, bd = R + 60; for (const bb of BOTS){ if (!bb.alive) continue; const d = Math.hypot(bb.x - pos.x, bb.y - pos.y); if (d < bd){ bd = d; bestB = bb; } } if (bestB) damageBot(bestB, damage, 'ally'); }
@@ -5363,7 +5362,7 @@ document.addEventListener('mousedown', e => { spawnRipple(e.clientX, e.clientY);
   const originalAvatarSVG = window.avatarSVG || avatarSVG;
   window.avatarSVG = function(id, size) {
     size = size || 32;
-    if (id && id.startsWith('data:image')) {
+    if (id && (id.startsWith('data:image/jpeg') || id.startsWith('data:image/jpg') || id.startsWith('data:image/png') || id.startsWith('data:image/webp'))) {
       return `<img src="${id}" style="width:${size}px;height:${size}px;object-fit:cover;border-radius:50%;display:block">`;
     }
     return originalAvatarSVG(id, size);
@@ -5956,7 +5955,7 @@ setInterval(() => {
     if (badgeValid) {
       html += `<span style="display:inline-flex;flex-shrink:0;line-height:1">${medalSVG(badgeLvl, 22)}</span>`;
     }
-    html += `<span style="font-size:18px;letter-spacing:4px;color:var(--bone);font-family:monospace">${data.nick}</span>`;
+    html += `<span style="font-size:18px;letter-spacing:4px;color:var(--bone);font-family:monospace">${escapeHtml(data.nick)}</span>`;
     html += `</div></div>`;
     return html;
   }
@@ -7056,9 +7055,9 @@ setInterval(() => {
       const dropped = Math.floor(b.pocket * 0.5);
       b.pocket -= dropped;
       let picker = killer || null;
-      if (!picker && src === 'player' && player && player.alive) picker = player;
+      if (!picker && src === 'player' && player) picker = player;
       if (!picker && src === 'ally') picker = nearestAllyTo(b.x, b.y, 300) || window._currentAttacker;
-      if (picker && picker.alive && dropped > 0){
+      if (picker && dropped > 0){
         picker.pocket = Math.min(500, (picker.pocket || 0) + dropped);
         if (picker === player) setLog('◆ +' + dropped + ' душ с врага');
         else if (ALLIES.includes(picker)) notify('Союзник +' + dropped + ' душ', '#5fa8ff');
@@ -7184,14 +7183,14 @@ setInterval(() => {
       }
       else if (idx === 2){ damage = 100; stun = 1000; R = Math.min(R, 220); }
     }
-    else if (sid === 'sunblink'){ if (idx === 0) stun = 2000; else if (idx === 1){ sunbeams.push({ x:pos.x, y:pos.y, r:80, delay:2, t:0, owner:b, botBeam:true }); R = Math.min(R, 320); } }
-    else if (sid === 'heal'){ if (idx === 0) { const mates = (isAlly ? [player, ...ALLIES] : BOTS); for (const u of mates){ if (u !== b && u.alive && u.hp < u.maxHp * 0.5) u.hp = u.maxHp; } if (b.hp < b.maxHp * 0.5) b.hp = b.maxHp; } else if (idx === 1) newEffect({ type:'healPool', x:pos.x, y:pos.y, r:70, ttl:10, color:'#4ac26a', botPool:true }); else if (idx === 2) damage = Math.round((b.maxHp - b.hp) * 0.3); }
-    else if (sid === 'stare'){ if (idx === 1) newEffect({ type:'eye', x:pos.x, y:pos.y, r:80, ttl:10, color:'#9b6edb', hitTick:{}, botEye:true, owner:b }); else if (idx === 2) damage = 60; }
-    else if (sid === 'madflare'){ if (idx === 0) newEffect({ type:'fireAround', follow:b, r:2*M, ttl:5, color:'#e0752a', botFire:true, owner:b }); else if (idx === 1){ effects.push({ type:'cone', x:b.x, y:b.y, dir:dir, r:R, ttl:1.2, maxTtl:1.2, color:'#e0752a', waves:3, waveTimer:0, hitSet:{}, owner:b, botCone:true }); } else if (idx === 2) b.speedBoost = { mult:1.5, until: performance.now() + 8000 }; }
+    else if (sid === 'sunblink'){ if (idx === 0) stun = 2000; else if (idx === 1){ sunbeams.push({ x:pos.x, y:pos.y, r:80, delay:2, t:0, owner:b, botBeam:!isAlly }); R = Math.min(R, 320); } }
+    else if (sid === 'heal'){ if (idx === 0) { const mates = (isAlly ? [player, ...ALLIES] : BOTS); for (const u of mates){ if (u !== b && u.alive && u.hp < u.maxHp * 0.5) u.hp = u.maxHp; } if (b.hp < b.maxHp * 0.5) b.hp = b.maxHp; } else if (idx === 1) newEffect({ type:'healPool', x:pos.x, y:pos.y, r:70, ttl:10, color:'#4ac26a', botPool:!isAlly }); else if (idx === 2) damage = Math.round((b.maxHp - b.hp) * 0.3); }
+    else if (sid === 'stare'){ if (idx === 1) newEffect({ type:'eye', x:pos.x, y:pos.y, r:80, ttl:10, color:'#9b6edb', hitTick:{}, botEye:!isAlly, owner:b }); else if (idx === 2) damage = 60; }
+    else if (sid === 'madflare'){ if (idx === 0) newEffect({ type:'fireAround', follow:b, r:2*M, ttl:5, color:'#e0752a', botFire:!isAlly, owner:b }); else if (idx === 1){ effects.push({ type:'cone', x:b.x, y:b.y, dir:dir, r:R, ttl:1.2, maxTtl:1.2, color:'#e0752a', waves:3, waveTimer:0, hitSet:{}, owner:b, botCone:!isAlly }); } else if (idx === 2) b.speedBoost = { mult:1.5, until: performance.now() + 8000 }; }
     else if (sid === 'bulwark'){ if (idx === 0) newEffect({ type:'wall', x:pos.x, y:pos.y, angle:Math.atan2(dir.y, dir.x), w:3*M, h:16, ttl:3, color:'#8a8a96', botWall:true }); else if (idx === 1) damage = 80; }
     else if (sid === 'thunder'){ if (idx === 0) b.speedBoost = { mult:1.5, until: performance.now() + 500 }; else if (idx === 1){ damage = 100; if (SETTINGS.hitRings) spawnHitRing(pos.x, pos.y, '#e8d640', 70, 0.4, 4); spawnParticles(pos.x, pos.y, '#e8d640', 20); } else if (idx === 2) b.hp = Math.min(b.maxHp, b.hp + 200); }
-    else if (sid === 'hemora'){ if (idx === 1){ projectiles.push({ type:'blood', x:b.x, y:b.y, vx:dir.x*540, vy:dir.y*540, ttl:0.52, color:'#c33a3a', owner:b, botBullet:true }); } else if (idx === 2) newEffect({ type:'bloodZone', follow:b, r:2*M, ttl:3, color:'#c33a3a', charges:0, hitSet:{}, botBlood:true, owner:b }); }
-    else if (sid === 'umbra'){ if (idx === 0) stun = 3000; else if (idx === 2){ damage = 100; R = Math.min(R, 220); umbraShadows.push({ x:pos.x, y:pos.y, r:40, targetR:130, ttl:6, maxTtl:6, hitTick:{}, botShadow:true, owner:b }); } }
+    else if (sid === 'hemora'){ if (idx === 1){ projectiles.push({ type:'blood', x:b.x, y:b.y, vx:dir.x*540, vy:dir.y*540, ttl:0.52, color:'#c33a3a', owner:b, botBullet:true }); } else if (idx === 2) newEffect({ type:'bloodZone', follow:b, r:2*M, ttl:3, color:'#c33a3a', charges:0, hitSet:{}, botBlood:!isAlly, owner:b }); }
+    else if (sid === 'umbra'){ if (idx === 0) stun = 3000; else if (idx === 2){ damage = 100; R = Math.min(R, 220); umbraShadows.push({ x:pos.x, y:pos.y, r:40, targetR:130, ttl:6, maxTtl:6, hitTick:{}, botShadow:!isAlly, owner:b }); } }
 
     if (damage > 0){
       if (isAlly){
@@ -7500,6 +7499,168 @@ setInterval(() => {
   }, 100);
 
   console.log('[PATCH3] Applied OK');
+})();
+</script>
+<script>
+(function(){
+  if (window._nickUniquePatch) return;
+  window._nickUniquePatch = true;
+  const _orig = window.openProfile;
+  window.openProfile = function(){
+    _orig();
+    const ni = document.getElementById('prof-nick-input');
+    const ns = document.getElementById('prof-nick-save');
+    if (!ni || !ns) return;
+    ns.onclick = async () => {
+      const v = (ni.value || '').trim().slice(0, 14);
+      if (!v){ ni.value = PROFILE.nick; return; }
+      if (v === PROFILE.nick){ playClick(400); return; }
+      ns.disabled = true; ns.textContent = 'ПРОВЕРКА...';
+      try {
+        if (fbDb && cloudSyncCode){
+          const snap = await fbDb.collection('saves').where('nick', '==', v).limit(5).get();
+          let taken = false;
+          snap.forEach(d => { if (d.id !== cloudSyncCode) taken = true; });
+          if (taken){ alert('Этот ник занят другим игроком. Придумай другой.'); ns.disabled = false; ns.textContent = 'СОХРАНИТЬ'; ni.focus(); return; }
+        }
+      } catch(e){ console.warn('Nick check failed', e); }
+      PROFILE.nick = v;
+      saveProfile();
+      if (typeof cloudSave === 'function') cloudSave();
+      updateProfileUI(); playClick(460);
+      _orig();
+    };
+  };
+})();
+</script>
+<script>
+(function(){
+  if (window._xssPatch2) return;
+  window._xssPatch2 = true;
+
+  // 1. Чистим HTML при вводе в поле ника (и при смене ника в профиле)
+  const _origOpenProfile = window.openProfile;
+  window.openProfile = function(){
+    _origOpenProfile();
+    const ni = document.getElementById('prof-nick-input');
+    if (ni && !ni._cleanBound){
+      ni._cleanBound = true;
+      ni.addEventListener('input', () => {
+        const clean = ni.value.replace(/[<>&"']/g, '');
+        if (clean !== ni.value){ ni.value = clean; }
+      });
+    }
+  };
+
+  // 2. Чистим ники из облака при загрузке ТОПОВ
+  const _fetch = window.fetchLeadersFromCloud;
+  window.fetchLeadersFromCloud = async function(){
+    const list = await _fetch.apply(this, arguments);
+    if (Array.isArray(list)){
+      for (const u of list){
+        if (u && typeof u.nick === 'string') u.nick = u.nick.replace(/[<>]/g, '');
+      }
+    }
+        return list;
+  };
+})();
+</script>
+<script>
+(function(){
+  if (window._comboPatch) return;
+  window._comboPatch = true;
+
+  // ФИКС 1: чистим HTML из ника ПЕРЕД отправкой в Firebase
+  const _chainCollect = window.collectProfileData;
+  window.collectProfileData = function(){
+    const d = _chainCollect();
+    if (d && typeof d.nick === 'string') d.nick = d.nick.replace(/[<>]/g, '');
+    return d;
+  };
+
+  // ФИКС 2: чистим свой ник при загрузке игры
+  try {
+    if (PROFILE && typeof PROFILE.nick === 'string'){
+      PROFILE.nick = PROFILE.nick.replace(/[<>]/g, '');
+      saveProfile();
+    }
+  } catch(e){}
+
+  // ФИКС 3: ползунки баннера больше не спамят Firebase
+  setInterval(function(){
+    ['b-op', 'b-bright', 'b-sat', 'b-dim'].forEach(id => {
+      const el = document.getElementById(id);
+      if (!el || el._antiSpam) return;
+      el._antiSpam = true;
+      const doPreview = () => {
+        const lbl = document.getElementById(id + '-v');
+        if (lbl) lbl.textContent = el.value;
+        const bDiv = document.getElementById('profile-banner');
+        if (bDiv){
+          const op = document.getElementById('b-op');
+          const br = document.getElementById('b-bright');
+          const sa = document.getElementById('b-sat');
+          const di = document.getElementById('b-dim');
+          bDiv.style.opacity = (op ? +op.value : 100) / 100;
+          bDiv.style.filter = `brightness(${br ? br.value : 100}%) saturate(${sa ? sa.value : 100}%)`;
+          const ov = document.getElementById('profile-banner-overlay');
+          if (ov) ov.style.background = `linear-gradient(180deg, transparent 0%, rgba(5,5,7,${(di ? +di.value : 60)/100}) 100%)`;
+        }
+      };
+      const doSave = () => {
+        doPreview();
+        try {
+          localStorage.setItem('soulfeed_banner_settings', JSON.stringify({
+            op: +(document.getElementById('b-op')?.value || 100),
+            bright: +(document.getElementById('b-bright')?.value || 100),
+            sat: +(document.getElementById('b-sat')?.value || 100),
+            dim: +(document.getElementById('b-dim')?.value || 60)
+          }));
+        } catch(e){}
+        if (typeof cloudSave === 'function') cloudSave();
+      };
+      el.oninput = doPreview;
+      el.onchange = doSave;
+    });
+  }, 400);
+})();
+</script>
+<script>
+(function(){
+  if (window._xssSanitize2) return;
+  window._xssSanitize2 = true;
+
+  // Убиваем XSS-векторы в любом HTML, который попадает на страницу.
+  // onclick НЕ трогаем — иначе поломаются кнопки "принять заявку" и т.п.
+  function sanitizeHtml(s){
+    if (typeof s !== 'string') return s;
+    // onerror, onload, onfocus, ontoggle, onanimation*, ontransition*, onpointer*, onsubmit, oninput, onchange
+    s = s.replace(/\son(?:error|load|focus|blur|toggle|animation\w+|transition\w+|pointer\w+|submit|input|change)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+    // autofocus + onfocus = классический XSS без клика
+    s = s.replace(/\sautofocus\b/gi, '');
+    // <script> и <iframe> — целиком
+    s = s.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+    s = s.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
+    return s;
+  }
+
+  // Патчим innerHTML — через него вставляется 95% HTML в игре
+  const _desc = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+  if (_desc && _desc.set && _desc.get){
+    Object.defineProperty(Element.prototype, 'innerHTML', {
+      configurable: true,
+      get: _desc.get,
+      set(v){ return _desc.set.call(this, sanitizeHtml(v)); }
+    });
+  }
+
+  // Патчим insertAdjacentHTML — используется для кнопки "загрузить фото" и др.
+  const _origIAH = Element.prototype.insertAdjacentHTML;
+  if (typeof _origIAH === 'function'){
+    Element.prototype.insertAdjacentHTML = function(pos, html){
+      return _origIAH.call(this, pos, sanitizeHtml(html));
+    };
+  }
 })();
 </script>
 </body>
