@@ -5206,7 +5206,7 @@ function stopMatch(){
   if (SETTINGS.sound) startAmbient();
 }
 document.getElementById('play-btn').onclick = () => { playClick(300, 0.15); startMatch(); };
-document.getElementById('exit').onclick = () => {
+document.getElementById('exit').onclick = async () => {
   playClick(400);
   if (!GAME_ACTIVE) return;
   if (!player){ stopMatch(); return; }
@@ -5216,7 +5216,7 @@ document.getElementById('exit').onclick = () => {
   if (oldXp >= 20){ penaltyText = 'Выйти из матча? Штраф −20 XP духа.'; }
   else if (oldXp > 0){ penaltyText = 'Выйти из матча? Штраф сбросит духа до 0 XP.'; }
   else { penaltyText = 'Выйти из матча? У духа 0 XP — штраф не применяется.'; }
-  const ok = confirm(penaltyText);
+  const ok = window.customConfirm ? await window.customConfirm(penaltyText) : confirm(penaltyText);
   if (!ok) return;
   if (oldXp > 0){
     saveSpiritXP(sid, Math.max(0, oldXp - 20));
@@ -8113,11 +8113,11 @@ setInterval(() => {
 
   const exitBtn = document.getElementById('exit');
   if (exitBtn) {
-    exitBtn.addEventListener('click', (e) => {
+    exitBtn.addEventListener('click', async (e) => {
       if (DUEL.active) {
         e.stopImmediatePropagation();
         e.preventDefault();
-        if (confirm('Сдаться? Вы потеряете 20 ELO.')) {
+        if (window.customConfirm ? await window.customConfirm('Сдаться? Вы потеряете 20 ELO.') : confirm('Сдаться? Вы потеряете 20 ELO.')) {
           DUEL.forfeit = true;
           DUEL.pWins = 0;
           DUEL.bWins = 3;
@@ -8479,6 +8479,50 @@ setInterval(() => {
       rankBox.insertAdjacentHTML('afterend', statsHtml);
     }, 80);
   };
+})();
+</script>
+<script>
+(function(){
+  if (window._noFsExitPatch) return;
+  window._noFsExitPatch = true;
+
+  // === Своё окно подтверждения ===
+  let _ccm = null;
+  function ensureCCM(){
+    if (_ccm) return _ccm;
+    _ccm = document.createElement('div');
+    _ccm.id = 'ccm-modal';
+    _ccm.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.88);display:none;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(6px)';
+    _ccm.innerHTML = '<div style="background:rgba(8,8,12,0.98);border:1px solid #3a0808;border-radius:8px;padding:24px 20px;max-width:380px;width:100%;text-align:center;box-shadow:0 0 60px rgba(139,26,26,0.5)"><div id="ccm-msg" style="font-size:13px;font-family:\'Courier New\',monospace;color:#d8d8d2;line-height:1.6;margin-bottom:22px;white-space:pre-line;letter-spacing:1px"></div><div style="display:flex;gap:10px"><button id="ccm-no" style="flex:1;padding:12px;background:rgba(30,30,40,.7);border:1px solid #3a3a44;color:#8a8a96;font-family:inherit;font-size:10px;letter-spacing:2px;border-radius:3px;cursor:pointer">ОТМЕНА</button><button id="ccm-yes" style="flex:1;padding:12px;background:rgba(139,26,26,.7);border:1px solid #8b1a1a;color:#d8d8d2;font-family:inherit;font-size:10px;letter-spacing:2px;border-radius:3px;cursor:pointer">ОК</button></div></div>';
+    document.body.appendChild(_ccm);
+    return _ccm;
+  }
+  window.customConfirm = function(msg){
+    return new Promise(resolve => {
+      const m = ensureCCM();
+      document.getElementById('ccm-msg').textContent = String(msg);
+      m.style.display = 'flex';
+      const yes = document.getElementById('ccm-yes');
+      const no = document.getElementById('ccm-no');
+      const done = (v) => { m.style.display = 'none'; yes.onclick = null; no.onclick = null; resolve(v); };
+      yes.onclick = () => done(true);
+      no.onclick = () => done(false);
+    });
+  };
+
+  // === Страховка: возвращаем fullscreen, если он потерялся в игре ===
+  function tryFs(){
+    const el = document.documentElement;
+    if (document.fullscreenElement || document.webkitFullscreenElement) return;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+    if (req){ try { const p = req.call(el); if (p && p.catch) p.catch(()=>{}); } catch(e){} }
+  }
+  const inGame = () => (typeof GAME_ACTIVE !== 'undefined' && GAME_ACTIVE) || window.DUEL_ACTIVE;
+  document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && inGame()) setTimeout(tryFs, 80); });
+  document.addEventListener('webkitfullscreenchange', () => { if (!document.webkitFullscreenElement && inGame()) setTimeout(tryFs, 80); });
+
+  // === Перебиваем alert (тоже выбивает из fullscreen) ===
+  window.alert = function(msg){ window.customConfirm(String(msg)).then(()=>{}); };
 })();
 </script>
 </body>
