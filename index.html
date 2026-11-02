@@ -4389,7 +4389,7 @@ function update(dt){
     }
   }
   if (!player.alive){
-    if (now >= player.respawnAt){ player.alive = true; player.hp = player.maxHp; player.x = 290; player.y = 1560; player.greedyFlying = false; player.umbraControl = { target:null, until:0 }; }
+    if (now >= player.respawnAt){ player.alive = true; player.hp = player.maxHp; player.x = window.DUEL_ACTIVE ? 600 : 290; player.y = window.DUEL_ACTIVE ? 1650 : 1560; player.greedyFlying = false; player.umbraControl = { target:null, until:0 }; }
     updateAllies(dt); updateBots(dt); updateEffects(dtS); updateCamera(dt); refreshMatchTopStatus(); updateAtkCdUI(now);
     return;
   }
@@ -5212,14 +5212,14 @@ document.getElementById('exit').onclick = () => {
   const sid = player.spiritId;
   const oldXp = loadSpiritXP(sid);
   let penaltyText = 'Выйти из матча?';
-  if (oldXp >= 10){ penaltyText = 'Выйти из матча? Штраф −10 XP духа.'; }
+  if (oldXp >= 20){ penaltyText = 'Выйти из матча? Штраф −20 XP духа.'; }
   else if (oldXp > 0){ penaltyText = 'Выйти из матча? Штраф сбросит духа до 0 XP.'; }
   else { penaltyText = 'Выйти из матча? У духа 0 XP — штраф не применяется.'; }
   const ok = confirm(penaltyText);
   if (!ok) return;
   if (oldXp > 0){
-    saveSpiritXP(sid, Math.max(0, oldXp - 10));
-    PROFILE.xp = Math.max(0, PROFILE.xp - 10);
+    saveSpiritXP(sid, Math.max(0, oldXp - 20));
+    PROFILE.xp = Math.max(0, PROFILE.xp - 20);
     saveProfile();
   }
   playClick(280); stopMatch();
@@ -7661,6 +7661,787 @@ setInterval(() => {
       return _origIAH.call(this, pos, sanitizeHtml(html));
     };
   }
+})();
+</script>
+<script>
+(function(){
+  if (window._fullDuelSystemFinalV2) return;
+  window._fullDuelSystemFinalV2 = true;
+
+  // 1. БАЗА ДАННЫХ И РАНГИ
+  if (typeof PROFILE.duelElo === 'undefined') PROFILE.duelElo = 0;
+  if (typeof PROFILE.duelWins === 'undefined') PROFILE.duelWins = 0;
+  if (typeof PROFILE.duelLosses === 'undefined') PROFILE.duelLosses = 0;
+
+  const _origCollect = window.collectProfileData;
+  window.collectProfileData = function(){
+    const d = _origCollect();
+    d.duelElo = PROFILE.duelElo || 0;
+    d.duelWins = PROFILE.duelWins || 0;
+    d.duelLosses = PROFILE.duelLosses || 0;
+    return d;
+  };
+  const _origApply = window.applyProfileData;
+  window.applyProfileData = function(data){
+    const r = _origApply(data);
+    if (typeof data.duelElo === 'number') PROFILE.duelElo = data.duelElo;
+    if (typeof data.duelWins === 'number') PROFILE.duelWins = data.duelWins;
+    if (typeof data.duelLosses === 'number') PROFILE.duelLosses = data.duelLosses;
+    return r;
+  };
+
+  const LEAGUES = [
+    { name: 'БРОНЗОВАЯ', color: '#cd7f32', text: '#ffd7a8' },
+    { name: 'СЕРЕБРЯНАЯ', color: '#c0c0c0', text: '#ffffff' },
+    { name: 'ЗОЛОТАЯ', color: '#ffd700', text: '#fffae6' },
+    { name: 'АЛМАЗНАЯ', color: '#b9f2ff', text: '#e6fcff' },
+    { name: 'РУБИНОВАЯ', color: '#e0115f', text: '#ffb3d1' }
+  ];
+
+  window.getDuelRankInfo = function(elo) {
+    elo = Math.max(0, elo || 0);
+    const totalSubRanks = Math.floor(elo / 30);
+    const currentEloInRank = elo % 30;
+    const leagueIndex = Math.min(Math.floor(totalSubRanks / 5), 4);
+    const subRank = (totalSubRanks % 5) + 1;
+    const league = LEAGUES[leagueIndex];
+    let displaySubRank = subRank;
+    if (leagueIndex === 4) displaySubRank = totalSubRanks - 20 + 1;
+
+    return {
+      leagueName: league.name, leagueColor: league.color, textColor: league.text,
+      subRank: displaySubRank, elo: elo,
+      progress: (currentEloInRank / 30) * 100, eloInRank: currentEloInRank, eloNeeded: 30
+    };
+  };
+
+  window.renderCloveMedal = function(color, size){
+    return `<svg width="${size}" height="${size}" viewBox="0 0 40 40" style="display:block;filter:drop-shadow(0 0 8px ${color}99)">
+      <path d="M20 2 L24 10 L32 8 L30 16 L38 20 L30 24 L32 32 L24 30 L20 38 L16 30 L8 32 L10 24 L2 20 L10 16 L8 8 L16 10 Z" fill="${color}" stroke="#0a0a0e" stroke-width="1.5" stroke-linejoin="round"/>
+      <circle cx="20" cy="20" r="8" fill="#0a0a0e" opacity="0.6"/>
+      <circle cx="20" cy="20" r="5" fill="${color}"/>
+      <path d="M20 15 L22 19 L26 20 L22 21 L20 25 L18 21 L14 20 L18 19 Z" fill="#fff" opacity="0.8"/>
+    </svg>`;
+  };
+
+  function getRankBoxHtml(elo, isSmall) {
+    const rank = window.getDuelRankInfo(elo);
+    if (isSmall) {
+      return `
+        <div style="margin: 14px 0; padding: 14px; background: linear-gradient(145deg, rgba(20,20,25,0.8), rgba(5,5,7,0.9)); border: 1px solid ${rank.leagueColor}55; border-radius: 6px; display: flex; align-items: center; gap: 14px; position: relative; overflow: hidden;">
+          <div style="width: 44px; height: 44px; flex-shrink: 0; position: relative; z-index: 1;">${window.renderCloveMedal(rank.leagueColor, 44)}</div>
+          <div style="flex: 1; position: relative; z-index: 1;">
+            <div style="font-size: 14px; font-family: monospace; font-weight: 900; color: ${rank.textColor}; letter-spacing: 1px; text-shadow: 0 0 8px ${rank.leagueColor}">${rank.leagueName} ЛИГА ${rank.subRank}</div>
+            <div style="font-size: 10px; font-family: monospace; color: var(--text-dim); margin-top: 2px;">Рейтинг: ${rank.elo} ELO</div>
+          </div>
+        </div>
+      `;
+    } else {
+      return `
+        <div id="duel-rank-box" style="margin: 16px 0; padding: 16px; background: linear-gradient(145deg, rgba(20,20,25,0.8), rgba(5,5,7,0.9)); border: 1px solid ${rank.leagueColor}55; border-radius: 8px; box-shadow: 0 4px 20px ${rank.leagueColor}22; position: relative; overflow: hidden;">
+          <div style="display: flex; align-items: center; gap: 16px; position: relative; z-index: 1;">
+            ${window.renderCloveMedal(rank.leagueColor, 56)}
+            <div style="flex: 1;">
+              <div style="font-size: 18px; font-family: monospace; font-weight: 900; color: ${rank.textColor}; letter-spacing: 2px; text-shadow: 0 0 10px ${rank.leagueColor}">${rank.leagueName} ЛИГА ${rank.subRank}</div>
+              <div style="font-size: 11px; font-family: monospace; color: var(--text-dim); margin-top: 4px;">Рейтинг: ${rank.elo} ELO</div>
+            </div>
+          </div>
+          <div style="margin-top: 14px; position: relative; z-index: 1;">
+            <div style="display: flex; justify-content: space-between; font-size: 9px; font-family: monospace; color: var(--text-mute); margin-bottom: 4px;">
+              <span>ДО СЛЕДУЮЩЕГО РАНГА</span>
+              <span>${Math.floor(rank.eloInRank)} / ${rank.eloNeeded} ELO</span>
+            </div>
+            <div style="height: 6px; background: rgba(10,10,14,0.8); border-radius: 3px; overflow: hidden; border: 1px solid rgba(255,255,255,0.05);">
+              <div style="height: 100%; width: ${rank.progress}%; background: ${rank.leagueColor}; box-shadow: 0 0 8px ${rank.leagueColor}; transition: width 0.4s ease;"></div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+  }
+
+  const _origOpenProfile = window.openProfile;
+  window.openProfile = function() {
+    _origOpenProfile();
+    setTimeout(() => {
+      const cont = document.getElementById('profile-content');
+      if (!cont || document.getElementById('duel-rank-box')) return;
+      const statsTitle = Array.from(cont.querySelectorAll('.stitle')).find(el => el.textContent.includes('ОБЩАЯ СТАТИСТИКА'));
+      if (statsTitle) statsTitle.insertAdjacentHTML('beforebegin', getRankBoxHtml(PROFILE.duelElo, false));
+    }, 50);
+  };
+
+  const _origPlayerProfile = window.openPlayerProfile;
+  window.openPlayerProfile = async function(id) {
+    await _origPlayerProfile(id);
+    setTimeout(async () => {
+      const cont = document.getElementById('vp-content');
+      if (!cont || cont.querySelector('[data-duel-rank]')) return;
+      try {
+        const snap = await fbDb.collection('saves').doc(id).get();
+        const targetElo = snap.data()?.duelElo || 0;
+        const statsTitle = Array.from(cont.querySelectorAll('.stitle')).find(el => el.textContent.includes('ОБЩАЯ СТАТИСТИКА'));
+        if (statsTitle) {
+          const div = document.createElement('div');
+          div.setAttribute('data-duel-rank', '1');
+          div.innerHTML = getRankBoxHtml(targetElo, true);
+          statsTitle.parentNode.insertBefore(div, statsTitle);
+        }
+      } catch(e){}
+    }, 50);
+  };
+
+  // 2. КНОПКА "ДУЭЛЬ"
+  setInterval(() => {
+    const playBtn = document.getElementById('play-btn');
+    if (playBtn && !document.getElementById('duel-btn')) {
+      const btn = document.createElement('button');
+      btn.id = 'duel-btn';
+      btn.textContent = 'ДУЭЛЬ';
+      btn.style.cssText = 'margin-top:12px; padding:clamp(5px,1.2vh,12px) clamp(20px,5vh,40px); background:linear-gradient(145deg,rgba(30,25,10,.9),rgba(15,10,5,.9)); border:1px solid #8b6a10; border-radius:2px; font-family:inherit; font-size:clamp(11px,1.7vh,15px); letter-spacing:clamp(5px,1.8vh,12px); color:#ffd966; cursor:pointer; text-shadow:0 0 12px rgba(255,217,102,.5); box-shadow:0 0 30px rgba(139,106,16,.15),inset 0 0 20px rgba(0,0,0,.5); flex-shrink:0; transition:transform 0.1s;';
+      btn.onmousedown = () => btn.style.transform = 'scale(0.96)';
+      btn.onmouseup = () => btn.style.transform = 'scale(1)';
+      btn.ontouchstart = () => btn.style.transform = 'scale(0.96)';
+      btn.ontouchend = () => btn.style.transform = 'scale(1)';
+      btn.onclick = () => { 
+        if (typeof playClick === 'function') playClick(500);
+        startDuelMatch();
+      };
+      playBtn.parentNode.insertBefore(btn, playBtn.nextSibling);
+    }
+  }, 500);
+
+  // 3. ТОЧНАЯ КАРТА ПО СКРИНУ
+  const DUEL_PLAYABLE = [ { x: 300, y: 0, w: 600, h: 1800 } ];
+  const DUEL_WALLS = [
+    // Верхние Г-образные стены
+    { x: 400, y: 300, w: 80, h: 40 }, { x: 440, y: 300, w: 40, h: 80 },
+    { x: 720, y: 300, w: 80, h: 40 }, { x: 720, y: 300, w: 40, h: 80 },
+    // Центральные вертикальные стены
+    { x: 440, y: 700, w: 40, h: 100 },
+    { x: 720, y: 700, w: 40, h: 100 },
+    { x: 440, y: 1000, w: 40, h: 100 },
+    { x: 720, y: 1000, w: 40, h: 100 },
+    // Нижние Г-образные стены
+    { x: 400, y: 1460, w: 80, h: 40 }, { x: 440, y: 1420, w: 40, h: 80 },
+    { x: 720, y: 1460, w: 80, h: 40 }, { x: 720, y: 1420, w: 40, h: 80 }
+  ];
+  const DUEL_BUSHES = [
+    // Дальние кусты
+    { x: 340, y: 480, r: 40 }, { x: 860, y: 480, r: 40 },
+    { x: 340, y: 1320, r: 40 }, { x: 860, y: 1320, r: 40 },
+    // Центральные кусты (прикреплены к стенам)
+    { x: 500, y: 750, r: 40 }, { x: 700, y: 750, r: 40 },
+    { x: 500, y: 1050, r: 40 }, { x: 700, y: 1050, r: 40 }
+  ];
+  const DUEL_BASES = [
+    { team: 'blue', x: 600, y: 1650, r: 60 },
+    { team: 'red', x: 600, y: 150, r: 60 }
+  ];
+
+  function applyDuelMap() {
+    PLAYABLE.length = 0; PLAYABLE.push(...DUEL_PLAYABLE);
+    WALLS.length = 0; WALLS.push(...DUEL_WALLS);
+    BUSHES.length = 0; BUSHES.push(...DUEL_BUSHES);
+    BASES.length = 0; BASES.push(...DUEL_BASES);
+  }
+
+  // 4. ЛОГИКА ДУЭЛИ
+  let DUEL = { active: false, round: 1, pWins: 0, bWins: 0, state: 'idle', timer: 0, dmgP: 0, dmgB: 0, prepTime: 0, forfeit: false };
+
+  window.startDuelMatch = function() {
+    if (typeof stopMatch === 'function') stopMatch();
+    DUEL.active = true;
+    window.DUEL_ACTIVE = true;
+    DUEL.round = 1;
+    DUEL.pWins = 0;
+    DUEL.bWins = 0;
+    DUEL.state = 'prep';
+    DUEL.forfeit = false;
+    startDuelRound();
+  };
+
+  function startDuelRound() {
+    DUEL.dmgP = 0;
+    DUEL.dmgB = 0;
+    DUEL.prepTime = 3;
+    DUEL.timer = 120;
+    DUEL.state = 'prep';
+    
+    applyDuelMap();
+    
+    // ОДИНАКОВЫЙ СЛУЧАЙНЫЙ ДУХ ДЛЯ ОБОИХ
+    const randSpirit = () => SPIRITS[Math.floor(Math.random() * SPIRITS.length)];
+    const sharedSpirit = randSpirit();
+    
+    selIdx = SPIRITS.indexOf(sharedSpirit); 
+
+    startMatch(); 
+
+    setTimeout(() => {
+      ALLIES.length = 0;
+      BOTS.length = 0;
+      CRYSTALS.length = 0; 
+      centerCrystal = { active: false, respawnAt: 9999999999999, isCenter: true }; // Навсегда убиваем центральный
+
+      player.x = 600; player.y = 1600;
+      player.facing = {x: 0, y: -1};
+
+      const rankLvl = Math.floor(PROFILE.duelElo / 30);
+      const aiScale = Math.min(1, (rankLvl / 25) * 1.0);
+
+      BOTS.push({ id:0, x: 600, y: 200, r: 20, color: sharedSpirit.color,
+        spiritId: sharedSpirit.id, role: 'attacker', speed: sharedSpirit.speed, hp: sharedSpirit.hp, maxHp: sharedSpirit.hp, regen: sharedSpirit.regen,
+        attackCd: 0, target:null, alive:true, respawnAt:0,
+        stunUntil:0, controlledUntil:0, hitFlash:0, lastSeen:-Infinity, revealedUntil:0,
+        pocket: 0, state: 'farm', skills: [0,0,0], skillCds: [8,10,8], skillCd: 2,
+        facing: { x:0, y:1 }, kills: 0, deaths: 0, team:'red',
+        currentRegen: sharedSpirit.regen, regenActive: true, _inBaseSince: 0, _baseBonus: false,
+        personality: (Math.random() - 0.5) * 0.2,
+        action: null, actionTarget: null, _decisionAt: 0, lastCombatAt: 0,
+        _customAiTier: aiScale
+      });
+
+      document.getElementById('match-top').style.display = 'none';
+      if (window.SETTINGS) window.SETTINGS.mm = false;
+      
+      EYE.x = -9999; EYE.y = -9999;
+      PojB.x = -9999; PojB.y = -9999;
+      PojR.x = -9999; PojR.y = -9999;
+
+      showDuelHud(sharedSpirit, sharedSpirit);
+      
+      // Убрали экран подготовки, просто пошел отсчет
+      
+    }, 100);
+  }
+
+  const _origBotTier = window.botTier || botTier;
+  window.botTier = botTier = function(b) {
+    if (DUEL.active && b._customAiTier !== undefined) return b._customAiTier;
+    return _origBotTier(b);
+  };
+
+  const _origDmgBot = window.damageBot || damageBot;
+  window.damageBot = damageBot = function(b, dmg, src, killer) {
+    if (DUEL.active && b.team === 'red') DUEL.dmgP += dmg;
+    return _origDmgBot.apply(this, arguments);
+  };
+  const _origDmgPlayer = window.damagePlayer || damagePlayer;
+  window.damagePlayer = damagePlayer = function(dmg, killer) {
+    if (DUEL.active) DUEL.dmgB += dmg;
+    return _origDmgPlayer.apply(this, arguments);
+  };
+
+  const _origUpdate = window.update || update;
+  window.update = update = function(dt) {
+    if (DUEL.active) {
+      const dtS = dt / 1000;
+      
+      if (DUEL.state === 'prep') {
+        DUEL.prepTime -= dtS;
+        const t = document.getElementById('duel-hud-timer');
+        if (t) t.textContent = `ЖДИ: ${Math.ceil(DUEL.prepTime)}`;
+
+        if (DUEL.prepTime <= 0) {
+          DUEL.state = 'fight';
+          if (t) t.style.color = '#ffd966';
+        } else {
+          if (typeof player !== 'undefined' && player) {
+            const px = player.x, py = player.y;
+            _origUpdate.call(this, dt);
+            player.x = px; player.y = py;
+            return;
+          }
+        }
+      }
+      
+      if (DUEL.state === 'fight') {
+        DUEL.timer -= dtS;
+        updateDuelHud(`${Math.floor(DUEL.timer/60)}:${String(Math.floor(DUEL.timer%60)).padStart(2,'0')}`);
+        
+        if (CRYSTALS.length > 0) CRYSTALS.length = 0; 
+
+        if (typeof player !== 'undefined' && player && !player.alive) {
+          DUEL.state = 'result'; endDuelRound('b'); return;
+        }
+        if (BOTS[0] && !BOTS[0].alive) {
+          DUEL.state = 'result'; endDuelRound('p'); return;
+        }
+        if (DUEL.timer <= 0) {
+          DUEL.state = 'result';
+          if (DUEL.dmgP > DUEL.dmgB) endDuelRound('p');
+          else if (DUEL.dmgB > DUEL.dmgP) endDuelRound('b');
+          else endDuelRound(Math.random() > 0.5 ? 'p' : 'b');
+          return;
+        }
+      }
+    }
+    return _origUpdate.call(this, dt);
+  };
+
+  function endDuelRound(winner) {
+    if (typeof player !== 'undefined' && player) player.stunUntil = performance.now() + 5000;
+    
+    if (winner === 'p') DUEL.pWins++;
+    else DUEL.bWins++;
+    
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center;';
+    overlay.innerHTML = `
+      <div style="font-size:40px; font-family:monospace; font-weight:900; color:${winner==='p'?'#5fa8ff':'#e05a5a'}; letter-spacing:10px; margin-bottom:20px;">
+        ${winner==='p'?'ПОБЕДА В РАУНДЕ':'ПОРАЖЕНИЕ'}
+      </div>
+      <div style="font-size:20px; font-family:monospace; color:#fff; margin-bottom:30px;">
+        СЧЕТ: ${DUEL.pWins} - ${DUEL.bWins}
+      </div>
+      <button id="duel-next-btn" class="sclose" style="width:200px;">ДАЛЕЕ</button>
+    `;
+    document.body.appendChild(overlay);
+    
+    document.getElementById('duel-next-btn').onclick = () => {
+      playClick(460);
+      overlay.remove();
+      if (DUEL.pWins >= 3 || DUEL.bWins >= 3 || DUEL.forfeit) finishDuelMatch();
+      else { DUEL.round++; startDuelRound(); }
+    };
+  }
+
+  function finishDuelMatch() {
+    DUEL.active = false;
+    window.DUEL_ACTIVE = false;
+    if (typeof stopMatch === 'function') stopMatch();
+    
+    const pWon = DUEL.pWins >= 3 && !DUEL.forfeit;
+    const scoreP = DUEL.forfeit ? 0 : (pWon ? 3 : DUEL.pWins);
+    const scoreB = DUEL.forfeit ? 3 : (!pWon ? 3 : DUEL.bWins);
+    
+    let eloChange = -20;
+    if (!DUEL.forfeit) {
+      const diff = Math.abs(scoreP - scoreB);
+      eloChange = diff >= 3 ? 15 : diff === 2 ? 10 : 5;
+      if (!pWon) eloChange = -eloChange;
+    }
+    
+    PROFILE.duelElo = Math.max(0, (PROFILE.duelElo || 0) + eloChange);
+    if (pWon) PROFILE.duelWins = (PROFILE.duelWins || 0) + 1;
+    else PROFILE.duelLosses = (PROFILE.duelLosses || 0) + 1;
+    
+    saveProfile();
+    if (typeof cloudSave === 'function') cloudSave();
+    
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(5,5,7,0.95); z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center;';
+    const newRank = getDuelRankInfo(PROFILE.duelElo);
+    overlay.innerHTML = `
+      <div style="font-size:40px; font-family:monospace; font-weight:900; color:${pWon?'#5fa8ff':'#e05a5a'}; letter-spacing:10px; margin-bottom:20px;">
+        ${pWon ? 'ПОБЕДА' : 'ПОРАЖЕНИЕ'}
+      </div>
+      <div style="font-size:24px; font-family:monospace; color:${eloChange>0?'#4ac26a':'#e05a5a'}; margin-bottom:40px; font-weight:900;">
+        ${eloChange > 0 ? '+' : ''}${eloChange} ELO
+      </div>
+      <div style="margin-bottom:20px;">${window.renderCloveMedal(newRank.leagueColor, 64)}</div>
+      <div style="font-size:16px; font-family:monospace; color:#fff;">${newRank.leagueName} ЛИГА ${newRank.subRank}</div>
+      <button id="duel-finish-btn" class="sclose" style="width:200px; margin-top:40px;">В МЕНЮ</button>
+    `;
+    document.body.appendChild(overlay);
+    
+    document.getElementById('duel-finish-btn').onclick = () => {
+      playClick(280);
+      overlay.remove();
+      PLAYABLE.length = 0; PLAYABLE.push(...ORIG_MAP.playable);
+      WALLS.length = 0; WALLS.push(...ORIG_MAP.walls);
+      BUSHES.length = 0; BUSHES.push(...ORIG_MAP.bushes);
+      BASES.length = 0; BASES.push(...ORIG_MAP.bases);
+      
+      document.getElementById('match-top').style.display = '';
+      if (window.SETTINGS) window.SETTINGS.mm = ORIG_MAP.mm;
+      
+      EYE.x = ORIG_MAP.eye.x; EYE.y = ORIG_MAP.eye.y;
+      PojB.x = ORIG_MAP.pojB.x; PojB.y = ORIG_MAP.pojB.y;
+      PojR.x = ORIG_MAP.pojR.x; PojR.y = ORIG_MAP.pojR.y;
+
+      openProfile();
+    };
+  }
+
+  // 5. UI И ВЫХОД
+  function showDuelHud(mySpirit, enemySpirit) {
+    let hud = document.getElementById('duel-hud');
+    if (!hud) {
+      hud = document.createElement('div');
+      hud.id = 'duel-hud';
+      hud.style.cssText = 'position:fixed; top:10px; left:50%; transform:translateX(-50%); display:flex; align-items:center; justify-content:center; gap:30px; z-index:9999; pointer-events:none; background:rgba(5,5,7,0.85); padding:8px 24px; border-radius:20px; border:1px solid #1c1c22;';
+      hud.innerHTML = `
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div style="width:32px;height:32px;border-radius:50%;background:#050507;border:2px solid #5fa8ff;display:flex;align-items:center;justify-content:center;" id="duel-hud-icon-p"></div>
+          <div style="font-family:monospace; font-size:14px; color:#5fa8ff; font-weight:900;" id="duel-hud-name-p">ТЫ</div>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:center; min-width:80px;">
+          <div id="duel-hud-timer" style="font-size:24px; font-family:monospace; font-weight:900; color:#ffd966; letter-spacing:2px;">2:00</div>
+          <div id="duel-hud-score" style="font-size:14px; font-family:monospace; font-weight:900; color:#d8d8d2;">0 - 0</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div style="font-family:monospace; font-size:14px; color:#e05a5a; font-weight:900;" id="duel-hud-name-e">ВРАГ</div>
+          <div style="width:32px;height:32px;border-radius:50%;background:#050507;border:2px solid #e05a5a;display:flex;align-items:center;justify-content:center;" id="duel-hud-icon-e"></div>
+        </div>
+      `;
+      document.getElementById('game').appendChild(hud);
+    }
+    hud.style.display = 'flex';
+    document.getElementById('duel-hud-icon-p').innerHTML = logoOf(mySpirit.id, mySpirit.color);
+    document.getElementById('duel-hud-name-p').textContent = mySpirit.name;
+    document.getElementById('duel-hud-icon-e').innerHTML = logoOf(enemySpirit.id, enemySpirit.color);
+    document.getElementById('duel-hud-name-e').textContent = enemySpirit.name;
+    document.getElementById('duel-hud-score').textContent = `${DUEL.pWins} - ${DUEL.bWins}`;
+  }
+
+  function updateDuelHud(text) {
+    const t = document.getElementById('duel-hud-timer');
+    if (t) t.textContent = text;
+    const s = document.getElementById('duel-hud-score');
+    if (s) s.textContent = `${DUEL.pWins} - ${DUEL.bWins}`;
+  }
+
+  const _origStopMatch = window.stopMatch || stopMatch;
+  window.stopMatch = stopMatch = function() {
+    const hud = document.getElementById('duel-hud');
+    if (hud) hud.style.display = 'none';
+    _origStopMatch.apply(this, arguments);
+  };
+
+  const exitBtn = document.getElementById('exit');
+  if (exitBtn) {
+    exitBtn.addEventListener('click', (e) => {
+      if (DUEL.active) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        if (confirm('Сдаться? Вы потеряете 20 ELO.')) {
+          DUEL.forfeit = true;
+          DUEL.pWins = 0;
+          DUEL.bWins = 3;
+          finishDuelMatch();
+        }
+      }
+    }, true);
+  }
+
+  window.ORIG_MAP = {
+    playable: JSON.parse(JSON.stringify(PLAYABLE)),
+    walls: JSON.parse(JSON.stringify(WALLS)),
+    bushes: JSON.parse(JSON.stringify(BUSHES)),
+    bases: JSON.parse(JSON.stringify(BASES)),
+    eye: { x: EYE.x, y: EYE.y },
+    pojB: { x: PojB.x, y: PojB.y },
+    pojR: { x: PojR.x, y: PojR.y },
+    mm: window.SETTINGS ? window.SETTINGS.mm : true
+  };
+
+})();
+</script>
+<script>
+(function(){
+  if (window._duelAiFix1) return;
+  window._duelAiFix1 = true;
+
+  // Сброс кеша пути при старте дуэли — иначе бот ходит по сетке старой карты
+  const _origStartDuelMatch = window.startDuelMatch;
+  if (_origStartDuelMatch) {
+    window.startDuelMatch = function() {
+      try { gridPass = null; } catch(e) {}
+      return _origStartDuelMatch.apply(this, arguments);
+    };
+  }
+
+  // Кастомный ИИ для дуэли: бежит в центр → патрулирует → атакует при виде игрока
+  const _origBotThink = window.botThink || botThink;
+  window.botThink = botThink = function(unit, isAlly, dt) {
+    if (window.DUEL_ACTIVE && !isAlly && unit.team === 'red' && unit.alive) {
+      const now = performance.now();
+      const dtS = dt / 1000;
+
+      // Реген
+      unit.hp = Math.min(unit.maxHp, unit.hp + unit.regen * dtS);
+
+      // Кулдауны
+      for (let i = 0; i < 3; i++) if (unit.skills[i] > 0) unit.skills[i] -= dtS;
+      if (unit.attackCd > 0) unit.attackCd -= dtS;
+      if (unit.skillCd > 0) unit.skillCd -= dtS;
+
+      if (unit.stunUntil > now) return;
+
+      const canSee = isVisibleFrom(unit, player.x, player.y) && !unitHiddenInBush(player);
+      const d = Math.hypot(unit.x - player.x, unit.y - player.y);
+
+      if (canSee) {
+        // ВИЖУ ИГРОКА — атака
+        if (d > 60) moveBotToward(unit, player.x, player.y, dtS, 1.0);
+        else if (unit.attackCd <= 0) {
+          unit.attackCd = 1.0;
+          damagePlayer(50, unit);
+        }
+        if (unit.skillCd <= 0) {
+          const idx = botPickSkill(unit, player, d, false);
+          if (idx >= 0) {
+            const dir = { x: (player.x - unit.x) / (d || 1), y: (player.y - unit.y) / (d || 1) };
+            if (botCastSkill(unit, idx, dir, { x: player.x, y: player.y }, false)) unit.skillCd = 1.5;
+          }
+        }
+      } else {
+        // НЕ ВИЖУ — иду в центр карты
+        const cX = 600, cY = 900;
+        const distToCenter = Math.hypot(unit.x - cX, unit.y - cY);
+        if (distToCenter > 120) {
+          moveBotToward(unit, cX, cY, dtS, 1.0);
+        } else {
+          // Уже в центре — патрулирую в радиусе 300
+          if (!unit.patrolX || Math.hypot(unit.x - unit.patrolX, unit.y - unit.patrolY) < 50) {
+            unit.patrolX = cX + (Math.random() - 0.5) * 300;
+            unit.patrolY = cY + (Math.random() - 0.5) * 300;
+          }
+          moveBotToward(unit, unit.patrolX, unit.patrolY, dtS, 0.7);
+        }
+      }
+      return;
+    }
+    return _origBotThink.apply(this, arguments);
+  };
+})();
+</script>
+<script>
+(function(){
+  if (window._duelLeaderboardPatch) return;
+  window._duelLeaderboardPatch = true;
+
+  // 1. ПЕРЕЗАПИСЬ ЗАГРУЗКИ ИЗ ОБЛАКА (тянем и по XP, и по ELO)
+  window.fetchLeadersFromCloud = async function(){
+    if (!fbDb) return [];
+    try {
+      const allUsers = new Map();
+      
+      // Топ по общему опыту
+      const s1 = await fbDb.collection('saves').orderBy('xp','desc').limit(50).get();
+      s1.forEach(d => {
+        const x = d.data();
+        allUsers.set(d.id, { id: d.id, nick: x.nick||'PLAYER', avatar: x.avatar||'default', profileXp: Math.max(0, Math.round(x.xp||0)), spiritXp: x.spiritXp||{}, duelElo: x.duelElo||0, isMe: d.id === cloudSyncCode });
+      });
+
+      // Топ по ELO
+      try {
+        const s2 = await fbDb.collection('saves').orderBy('duelElo','desc').limit(50).get();
+        s2.forEach(d => {
+          const x = d.data();
+          if (!allUsers.has(d.id)) {
+            allUsers.set(d.id, { id: d.id, nick: x.nick||'PLAYER', avatar: x.avatar||'default', profileXp: Math.max(0, Math.round(x.xp||0)), spiritXp: x.spiritXp||{}, duelElo: x.duelElo||0, isMe: d.id === cloudSyncCode });
+          }
+        });
+      } catch(e) {}
+
+      return Array.from(allUsers.values());
+    } catch(e){ return []; }
+  };
+
+  // 2. ПАТЧ СЕБЯ В СПИСКЕ
+  const _origPlayerAsLeader = window.playerAsLeader;
+  window.playerAsLeader = function(){
+    const res = _origPlayerAsLeader.apply(this, arguments);
+    res.duelElo = PROFILE.duelElo || 0;
+    return res;
+  };
+
+  // 3. ЛОГИКА СОРТИРОВКИ ДЛЯ РАНКЕДА
+  const _origLeadersFor = window.leadersFor;
+  window.leadersFor = function(metric){
+    if (metric === 'duel') {
+      const all = ONLINE_LEADERS.slice();
+      all.push(window.playerAsLeader());
+      all.sort((a, b) => (b.duelElo || 0) - (a.duelElo || 0));
+      return all;
+    }
+    return _origLeadersFor.apply(this, arguments);
+  };
+
+  // 4. ПОЛНАЯ ПЕРЕЗАПИСЬ РЕНДЕРА ТОПОВ (Добавляем вкладку и медали)
+  window.renderLeadersList = async function(){
+    const cont = document.getElementById('leaders-content');
+    if (!cont) return;
+    cont.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-mute);font-family:monospace;font-size:11px">ЗАГРУЗКА…</div>';
+    try { const cl = await fetchLeadersFromCloud(); if (cl && cl.length) ONLINE_LEADERS = cl.filter(u => !u.isMe); } catch(e){}
+    
+    window._cloudProfilesCache = {};
+    ONLINE_LEADERS.forEach(u => { window._cloudProfilesCache[u.id] = u; });
+
+    const metric = _leadersTab;
+    const list = leadersFor(metric);
+    const rows = [];
+
+    rows.push(`<div style="margin-bottom:12px;display:flex;gap:8px">
+      <input type="text" id="leader-search" placeholder="Поиск игрока..." style="flex:1;background:rgba(10,10,14,.8);border:1px solid var(--border-2);color:var(--bone);padding:10px;font-family:monospace;font-size:12px;border-radius:2px;outline:none">
+    </div>`);
+
+    const tabs = [{ id:'profile', label:'ПРОФИЛЬ' }];
+    tabs.push({ id:'duel', label:'РАНКЕД', color:'#ffd966' }); // НОВАЯ ВКЛАДКА
+    SPIRITS.forEach(s => tabs.push({ id:s.id, label:s.name, color:s.color }));
+    
+    rows.push(`<div class="leader-tabs">`);
+    tabs.forEach(t => {
+      const on = (t.id === metric) ? ' on' : '';
+      const style = (t.color && on) ? ` style="border-color:${t.color};box-shadow:0 0 10px ${t.color}55"` : '';
+      rows.push(`<button class="leader-tab${on}" data-tab="${t.id}"${style}>${t.label}</button>`);
+    });
+    rows.push(`</div>`);
+
+    if (list.length === 0){
+      rows.push(`<div style="text-align:center;padding:40px 20px;color:var(--text-mute);font-family:monospace;font-size:11px">ПУСТО</div>`);
+    } else {
+      list.forEach((u, i) => {
+        const rank = i + 1;
+        let xpVal, lvlVal, sub, lvalHtml;
+
+        if (metric === 'profile') {
+          xpVal = u.profileXp;
+          lvlVal = levelFromXp(xpVal).level;
+          sub = `${xpVal} XP`;
+          lvalHtml = `LVL ${lvlVal}`;
+        } else if (metric === 'duel') {
+          xpVal = u.duelElo || 0;
+          const rInfo = window.getDuelRankInfo(xpVal);
+          sub = `${xpVal} ELO`;
+          lvalHtml = `<div style="display:flex; align-items:center; justify-content:flex-end; gap:8px;">
+            <span style="font-size:10px; color:${rInfo.textColor}; text-shadow:0 0 5px ${rInfo.leagueColor}; font-family:monospace; font-weight:900;">${rInfo.leagueName} ${rInfo.subRank}</span>
+            <div style="width:26px; height:26px; flex-shrink:0;">${window.renderCloveMedal(rInfo.leagueColor, 26)}</div>
+          </div>`;
+        } else {
+          xpVal = (u.spiritXp && u.spiritXp[metric]) || 0;
+          lvlVal = levelFromXp(xpVal).level;
+          sub = `${xpVal} XP духа`;
+          lvalHtml = `LVL ${lvlVal}`;
+        }
+
+        const rankCls = rank === 1 ? ' top1' : rank === 2 ? ' top2' : rank === 3 ? ' top3' : '';
+        const meCls = u.isMe ? ' me' : '';
+        const nickBlock = u.isMe ? playerNickHTML(u.nick + ' [ТЫ]', { small: true, badgeSize: 18, nickSize: 12, showTitle: true }) : `<div class="ln">${u.nick}</div>`;
+        
+        rows.push(`<div class="leader-row${rankCls}${meCls}" data-id="${u.id || ''}" style="cursor:pointer">
+          <div class="lrank">#${rank}</div>
+          <div class="lav">${avatarSVG(u.avatar || 'default', 44)}</div>
+          <div class="lnick">${nickBlock}<div class="lsub">${sub}</div></div>
+          <div class="lval" style="min-width:100px;">${lvalHtml}</div>
+        </div>`);
+      });
+    }
+
+    cont.innerHTML = rows.join('');
+    
+    cont.querySelectorAll('.leader-tab').forEach(btn => {
+      btn.onclick = () => { playClick(460); _leadersTab = btn.dataset.tab; renderLeadersList(); };
+    });
+
+    const search = document.getElementById('leader-search');
+    if (search) {
+      search.oninput = (e) => {
+        const val = e.target.value.toLowerCase();
+        cont.querySelectorAll('.leader-row').forEach(r => {
+          const name = r.querySelector('.ln') ? r.querySelector('.ln').textContent.toLowerCase() : '';
+          r.style.display = name.includes(val) ? 'flex' : 'none';
+        });
+      };
+    }
+
+    cont.querySelectorAll('.leader-row').forEach(row => {
+      row.onclick = () => {
+        const id = row.dataset.id;
+        if (!id || id === cloudSyncCode) return;
+        playClick(450);
+        openPlayerProfile(id);
+      };
+    });
+  };
+})();
+</script>
+<script>
+(function(){
+  if (window._botVisualPatch) return;
+  window._botVisualPatch = true;
+
+  // 1. ПАТЧ КАСТА СКИЛЛОВ БОТОВ (добавляем визуал там, где его нет)
+  const _origBotCastSkill = window.botCastSkill || botCastSkill;
+  window.botCastSkill = botCastSkill = function(b, idx, dir, pos, isAlly) {
+    const result = _origBotCastSkill.apply(this, arguments);
+    if (result && !isAlly) {
+      const sid = b.spiritId;
+      // Визуал для скиллов без эффектов
+      if (sid === 'tether' && idx === 0) { spawnHitRing(b.x, b.y, b.color, 100, 0.5, 4); spawnParticles(b.x, b.y, b.color, 15); }
+      if (sid === 'tether' && idx === 2) { spawnHitRing(player.x, player.y, b.color, 60, 0.4, 3); spawnParticles(player.x, player.y, b.color, 10); }
+      if (sid === 'umbra' && idx === 0) { spawnHitRing(player.x, player.y, '#8b1a1a', 60, 0.5, 3); spawnParticles(player.x, player.y, '#8b1a1a', 10); }
+      if (sid === 'umbra' && idx === 1) { spawnHitRing(b.x, b.y, '#8b1a1a', 50, 0.3, 2); }
+      if (sid === 'sunblink' && idx === 0) { spawnHitRing(player.x, player.y, '#e0b94a', 60, 0.5, 3); spawnParticles(player.x, player.y, '#e0b94a', 12); }
+      if (sid === 'heal' && idx === 0) { spawnHitRing(b.x, b.y, '#4ac26a', 80, 0.5, 3); }
+      if (sid === 'heal' && idx === 2) { spawnHitRing(player.x, player.y, '#4ac26a', 60, 0.4, 3); }
+      if (sid === 'stare' && idx === 0) { spawnHitRing(b.x, b.y, '#9b6edb', 80, 0.5, 2); }
+      if (sid === 'stare' && idx === 2) { spawnHitRing(player.x, player.y, '#9b6edb', 60, 0.4, 3); }
+      if (sid === 'bulwark' && idx === 1) { spawnHitRing(b.x, b.y, '#8a8a96', 80, 0.3, 4); }
+      if (sid === 'bulwark' && idx === 2) { spawnHitRing(b.x, b.y, '#8a8a96', 50, 0.3, 3); }
+      if (sid === 'thunder' && idx === 0) { spawnHitRing(b.x, b.y, '#e8d640', 50, 0.3, 2); }
+      if (sid === 'thunder' && idx === 2) { spawnHitRing(b.x, b.y, '#e8d640', 50, 0.3, 2); }
+      if (sid === 'hemora' && idx === 0) { spawnHitRing(b.x, b.y, '#c33a3a', 50, 0.3, 2); }
+    }
+    return result;
+  };
+
+  // 2. ПАТЧ РЕНДЕРА (рисуем колы ботов для Tether W)
+  const _origRender = window.render || render;
+  window.render = render = function() {
+    _origRender.apply(this, arguments);
+    
+    const ctx = document.getElementById('cv').getContext('2d');
+    ctx.save();
+    // Применяем камеру
+    let sx = 0, sy = 0;
+    if (camShake > 0) { sx = (Math.random()-0.5)*camShake*24; sy = (Math.random()-0.5)*camShake*24; }
+    const camX = -cam.x + sx, camY = -cam.y + sy;
+    ctx.translate(camX, camY);
+
+    // Рисуем колы (stakes) ботов
+    for (const b of BOTS) {
+      if (!b.alive || !b._stakes || b._stakes.length === 0) continue;
+      const stakes = b._stakes;
+      const bColor = b.color;
+      
+      // Линии
+      ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.moveTo(b.x, b.y);
+      ctx.lineTo(stakes[0].x, stakes[0].y);
+      for (let i = 0; i < stakes.length - 1; i++) {
+        ctx.lineTo(stakes[i+1].x, stakes[i+1].y);
+      }
+      ctx.stroke();
+      
+      ctx.strokeStyle = bColor; ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(b.x, b.y);
+      ctx.lineTo(stakes[0].x, stakes[0].y);
+      for (let i = 0; i < stakes.length - 1; i++) {
+        ctx.lineTo(stakes[i+1].x, stakes[i+1].y);
+      }
+      ctx.stroke();
+
+      // Колы
+      for (const s of stakes) {
+        ctx.fillStyle = '#08080e';
+        ctx.beginPath(); ctx.arc(s.x, s.y, 12, 0, 6.28); ctx.fill();
+        ctx.strokeStyle = bColor; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(s.x, s.y, 12, 0, 6.28); ctx.stroke();
+        ctx.fillStyle = '#d8d8d2';
+        ctx.beginPath(); ctx.arc(s.x, s.y, 5, 0, 6.28); ctx.fill();
+        ctx.fillStyle = bColor;
+        ctx.beginPath(); ctx.arc(s.x, s.y, 2.5, 0, 6.28); ctx.fill();
+      }
+    }
+
+    ctx.restore();
+  };
 })();
 </script>
 </body>
