@@ -1788,6 +1788,7 @@ rows.push(`<div class="stitle">// НИК</div>`);
   if (rb) rb.onclick = () => {
     playClick(400);
     if (!confirm('ПОЛНЫЙ СБРОС?')) return;
+    PROFILE.duelElo = 0; PROFILE.duelWins = 0; PROFILE.duelLosses = 0;
     PROFILE.xp = 0; PROFILE.stats = { matches:0, wins:0, losses:0, kills:0, deaths:0, souls:0, crystals:0, totalTimeSec:0, bestKills:0, bestSouls:0 }; if(typeof cloudSave === 'function') cloudSave();
     saveProfile();
     SPIRITS.forEach(s => {
@@ -8441,6 +8442,42 @@ setInterval(() => {
     }
 
     ctx.restore();
+  };
+})();
+</script>
+<script>
+(function(){
+  if (window._duelStatsPatch) return;
+  window._duelStatsPatch = true;
+
+  const _origOpenProfile = window.openProfile;
+  window.openProfile = function() {
+    _origOpenProfile();
+    setTimeout(() => {
+      const cont = document.getElementById('profile-content');
+      if (!cont || document.getElementById('duel-stats-box')) return;
+      const rankBox = document.getElementById('duel-rank-box');
+      if (!rankBox) return;
+
+      const wins = PROFILE.duelWins || 0;
+      const losses = PROFILE.duelLosses || 0;
+      const total = wins + losses;
+      const wr = total > 0 ? Math.round((wins / total) * 100) : 0;
+
+      const statsHtml = `
+        <div id="duel-stats-box" style="margin: -8px 0 16px 0; padding: 12px; background: rgba(10,10,13,.6); border: 1px solid var(--border-2); border-radius: 6px;">
+          <div style="font-size: 9px; letter-spacing: 3px; color: #ffd966; font-family: monospace; margin-bottom: 10px;">// СТАТИСТИКА ДУЭЛЕЙ</div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(70px, 1fr)); gap: 6px;">
+            ${statCell('МАТЧИ', total, 'var(--bone)')}
+            ${statCell('ПОБЕДЫ', wins, '#4ac26a')}
+            ${statCell('ПОРАЖ.', losses, '#e05a5a')}
+            ${statCell('ВИНРЕЙТ', wr + '%', wr >= 50 ? '#4ac26a' : '#e05a5a')}
+          </div>
+        </div>
+      `;
+
+      rankBox.insertAdjacentHTML('afterend', statsHtml);
+    }, 80);
   };
 })();
 </script>
