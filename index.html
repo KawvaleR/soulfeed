@@ -10083,5 +10083,268 @@ setInterval(() => {
   };
 })();
 </script>
+<script>
+(function(){
+  if (window._pcControlsPatchV2) return;
+  window._pcControlsPatchV2 = true;
+
+  const isPC = window.matchMedia('(pointer: fine)').matches || navigator.maxTouchPoints === 0;
+  window._isPC = isPC;
+
+  let lastMouseX = window.innerWidth / 2;
+  let lastMouseY = window.innerHeight / 2;
+  const keys = { w: false, a: false, s: false, d: false };
+
+  if (isPC) {
+    const style = document.createElement('style');
+    style.innerHTML = `
+      @media (pointer: fine) {
+        #joy, #atk { display: none !important; }
+        #skills { right: 40px !important; bottom: 40px !important; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  window.addEventListener('mousemove', e => {
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+  });
+
+  window.addEventListener('keydown', e => {
+    const k = e.key.toLowerCase();
+    
+    if (k === 'w' || k === 'ц' || k === 'arrowup') { keys.w = true; e.preventDefault(); }
+    if (k === 's' || k === 'ы' || k === 'arrowdown') { keys.s = true; e.preventDefault(); }
+    if (k === 'a' || k === 'ф' || k === 'arrowleft') { keys.a = true; e.preventDefault(); }
+    if (k === 'd' || k === 'в' || k === 'arrowright') { keys.d = true; e.preventDefault(); }
+
+    if (!GAME_ACTIVE || !MATCH_READY || !player || !player.alive) return;
+
+    // Z / X / C + цифры 1/2/3
+    if (k === 'z' || k === 'я' || k === '1') { castMouseSkill(0); e.preventDefault(); }
+    if (k === 'x' || k === 'ч' || k === '2') { castMouseSkill(1); e.preventDefault(); }
+    if (k === 'c' || k === 'с' || k === '3') { castMouseSkill(2); e.preventDefault(); }
+
+    if (k === ' ' || k === 'spacebar') { doAttack(); e.preventDefault(); }
+  });
+
+  window.addEventListener('keyup', e => {
+    const k = e.key.toLowerCase();
+    if (k === 'w' || k === 'ц' || k === 'arrowup') keys.w = false;
+    if (k === 's' || k === 'ы' || k === 'arrowdown') keys.s = false;
+    if (k === 'a' || k === 'ф' || k === 'arrowleft') keys.a = false;
+    if (k === 'd' || k === 'в' || k === 'arrowright') keys.d = false;
+  });
+
+  window.addEventListener('mousedown', e => {
+    if (e.button === 0 && e.target.tagName === 'CANVAS' && GAME_ACTIVE && MATCH_READY) {
+      doAttack();
+    }
+  });
+
+  function castMouseSkill(idx) {
+    if (!player || !player.alive || !MATCH_READY) return;
+    if (player.stunUntil > performance.now() || player.controlledUntil > performance.now()) return;
+
+    const sid = player.spiritId;
+    const mode = skillMode(sid, idx);
+
+    if (mode === 'self' || mode === 'around') {
+      if (player.skills[idx] > 0) return;
+      castSkill(sid, idx, { x: player.facing.x, y: player.facing.y }, { x: player.x, y: player.y });
+      return;
+    }
+
+    const mx = lastMouseX, my = lastMouseY;
+    const wx = mx + cam.x;
+    const wy = my + cam.y;
+    const dx = wx - player.x;
+    const dy = wy - player.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const dir = { x: dx/len, y: dy/len };
+
+    if (sid === 'tether') {
+      if (idx === 1) {
+        if (player.kovyZona || stakes.length === 4) { pullKovy(); return; }
+        const setting = (stakes.length > 0 && stakes.length < 4);
+        if (!setting && player.skills[idx] > 0) return;
+        castTether2(dir);
+        return;
+      }
+      if (idx === 2) {
+        if (player.skills[2] > 0) return;
+        castTether3(dir);
+        return;
+      }
+    }
+
+    if (sid === 'umbra' && idx === 0 && player.umbraControl.target && player.umbraControl.until > performance.now()) {
+      castUmbra1(dir);
+      return;
+    }
+
+    if (player.skills[idx] > 0) return;
+
+    const maxRange = skillRange(sid, idx);
+    const distToMouse = Math.hypot(wx - player.x, wy - player.y);
+    const useRange = Math.min(maxRange, distToMouse);
+
+    const pos = { x: player.x + dir.x * useRange, y: player.y + dir.y * useRange };
+
+    castSkill(sid, idx, dir, pos, useRange);
+  }
+
+  const _origUpdate = window.update || update;
+  window.update = update = function(dt) {
+    if (joyId === null) {
+      let mx = 0, my = 0;
+      if (keys.a) mx -= 1;
+      if (keys.d) mx += 1;
+      if (keys.w) my -= 1;
+      if (keys.s) my += 1;
+      const len = Math.hypot(mx, my);
+      if (len > 0) {
+        input.mx = mx / len;
+        input.my = my / len;
+      } else {
+        input.mx = 0;
+        input.my = 0;
+      }
+    }
+    return _origUpdate.call(this, dt);
+  };
+
+  // ===== ЗАМЕНА HELP: (Q, W, E) -> (Z, X, C) =====
+  const _origOpenHelp = window.openHelp || openHelp;
+  window.openHelp = openHelp = function() {
+    const h = document.getElementById('help-content'); 
+    if (!h) return _origOpenHelp.apply(this, arguments);
+    h.innerHTML = '';
+    HELP.forEach(item => {
+      const b = document.createElement('div'); 
+      b.style.marginBottom = '18px';
+      const bodyText = item.b.replace('(Q, W, E)', '(Z, X, C)');
+      b.innerHTML = `<div class="stitle">${item.p}</div><div style="font-size:12px;line-height:1.7;color:var(--text);font-family:serif;padding:8px 4px">${bodyText}</div>`;
+      h.appendChild(b);
+    });
+    
+    // Добавляем блок ПК-управления если ПК
+    if (isPC) {
+      const block = document.createElement('div');
+      block.style.marginBottom = '18px';
+      block.innerHTML = `<div class="stitle">// УПРАВЛЕНИЕ НА ПК</div><div style="font-size:12px;line-height:1.7;color:var(--text);font-family:serif;padding:8px 4px"><b style="color:#c8c8c4">WASD / Стрелки</b> — движение<br><b style="color:#c8c8c4">Z / X / C</b> — скилы (или 1 / 2 / 3)<br><b style="color:#c8c8c4">ЛКМ / Space</b> — удар<br><b style="color:#c8c8c4">Курсор мыши</b> — наведение скилов</div>`;
+      h.insertBefore(block, h.firstChild);
+    }
+    
+    document.getElementById('help-modal').classList.add('on');
+  };
+
+  // ===== ЗАМЕНА В updateHero: Q/W/E -> Z/X/C при клике на духа =====
+  const _origUpdateHero = window.updateHero || updateHero;
+  window.updateHero = updateHero = function() {
+    _origUpdateHero();
+    const nameEl = document.getElementById('hero-name');
+    if (nameEl && nameEl.onclick) {
+      const _origClick = nameEl.onclick;
+      nameEl.onclick = function() {
+        const _origShowTip = window.showTip;
+        window.showTip = function(title, path, body) {
+          if (typeof body === 'string') {
+            body = body.replace(/Q · /g, 'Z · ').replace(/W · /g, 'X · ').replace(/E · /g, 'C · ');
+          }
+          return _origShowTip(title, path, body);
+        };
+        _origClick.call(this);
+        window.showTip = _origShowTip;
+      };
+    }
+  };
+
+})();
+</script>
+<script>
+(function(){
+  if (window._helpLettersFix) return;
+  window._helpLettersFix = true;
+
+  // 1. Меняем текст в самом массиве HELP
+  if (typeof HELP !== 'undefined' && Array.isArray(HELP)) {
+    HELP.forEach(item => {
+      if (item.b) {
+        item.b = item.b.replace(/\(Q, W, E\)/g, '(Z, X, C)')
+                       .replace(/Q, W, E/g, 'Z, X, C')
+                       .replace(/Q\/W\/E/g, 'Z\/X\/C');
+      }
+    });
+  }
+
+  // 2. Переназначаем openHelp, чтобы точно использовался обновленный HELP
+  const _origOpenHelp = window.openHelp || openHelp;
+  window.openHelp = openHelp = function() {
+    const h = document.getElementById('help-content');
+    if (!h) return _origOpenHelp.apply(this, arguments);
+    h.innerHTML = '';
+    HELP.forEach(item => {
+      const b = document.createElement('div'); 
+      b.style.marginBottom = '18px';
+      b.innerHTML = `<div class="stitle">${item.p}</div><div style="font-size:12px;line-height:1.7;color:var(--text);font-family:serif;padding:8px 4px">${item.b}</div>`;
+      h.appendChild(b);
+    });
+    document.getElementById('help-modal').classList.add('on');
+  };
+})();
+</script>
+<script>
+(function(){
+  if (window._helpZXCFinal) return;
+  window._helpZXCFinal = true;
+
+  // 1. Правим сам массив HELP
+  if (typeof HELP !== 'undefined' && Array.isArray(HELP)) {
+    HELP.forEach(item => {
+      if (!item.b) return;
+      item.b = item.b.replace(/\(Q, W, E\)/g, '(Z, X, C)');
+      item.b = item.b.replace(/Tether W и E/g, 'Tether X и C');
+      item.b = item.b.replace(/Sunblink W и E/g, 'Sunblink X и C');
+      item.b = item.b.replace(/Heal W и E/g, 'Heal X и C');
+      item.b = item.b.replace(/Stare W/g, 'Stare X');
+      item.b = item.b.replace(/Madflare Q и E/g, 'Madflare Z и C');
+      item.b = item.b.replace(/Thunder Q, W, E/g, 'Thunder Z, X, C');
+      item.b = item.b.replace(/Hemora Q и E/g, 'Hemora Z и C');
+    });
+  }
+
+  // 2. Перехватываем showTip — в модалке духа буквы станут Z, X, C
+  const _origShowTip = window.showTip || showTip;
+  window.showTip = showTip = function(title, path, body) {
+    if (typeof body === 'string') {
+      body = body.replace(/([QWE]) · /g, function(m, p1) {
+        if (p1 === 'Q') return 'Z · ';
+        if (p1 === 'W') return 'X · ';
+        if (p1 === 'E') return 'C · ';
+        return m;
+      });
+    }
+    return _origShowTip.apply(this, arguments);
+  };
+
+  // 3. Перезаписываем openHelp, чтобы точно использовался исправленный HELP
+  const _origOpenHelp = window.openHelp || openHelp;
+  window.openHelp = openHelp = function() {
+    const h = document.getElementById('help-content');
+    if (!h) return _origOpenHelp.apply(this, arguments);
+    h.innerHTML = '';
+    HELP.forEach(item => {
+      const b = document.createElement('div'); 
+      b.style.marginBottom = '18px';
+      b.innerHTML = `<div class="stitle">${item.p}</div><div style="font-size:12px;line-height:1.7;color:var(--text);font-family:serif;padding:8px 4px">${item.b}</div>`;
+      h.appendChild(b);
+    });
+    document.getElementById('help-modal').classList.add('on');
+  };
+
+})();
+</script>
 </body>
 </html>
